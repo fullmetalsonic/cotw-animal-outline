@@ -1,0 +1,10 @@
+.build-venv/
+build/
+dist/
+release/
+*.spec
+__pycache__/
+*.pyc
+*-scan.json
+build.log
+package-validation.json
