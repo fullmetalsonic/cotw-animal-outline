@@ -45,7 +45,19 @@ try {
     Invoke-LoggedPython -ArgumentList @('outline_mod.py', '--self-test')
     Invoke-LoggedPython -ArgumentList @('-m', 'unittest', 'discover', '-v')
     Invoke-LoggedPython -ArgumentList @('-c', 'from app_version import VERSION; print("Building COTWAnimalOutline " + VERSION)')
-    Invoke-LoggedPython -ArgumentList @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--windowed', '--noupx', '--name', 'COTWAnimalOutline', '--add-data', 'THIRD_PARTY_NOTICES.txt;.', 'outline_mod.py')
+    # Some Python distributions require this public CA companion when creating
+    # SSLContext. Keep their trust policy intact in the frozen application.
+    Invoke-LoggedPython -ArgumentList @('-c', 'import ssl; ssl.create_default_context(); print("SSL context preflight: PASS")')
+    $sslCompanion = & $buildPython -c 'from pathlib import Path; import ssl; p = Path(ssl.__file__).with_name("codex-rejected-cas.pem"); print(str(p) if p.is_file() else "")'
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not inspect Python SSL companion data.'
+    }
+    $freezeArguments = @('-m', 'PyInstaller', '--noconfirm', '--clean', '--workpath', 'build/package', '--onefile', '--windowed', '--noupx', '--name', 'COTWAnimalOutline', '--add-data', 'THIRD_PARTY_NOTICES.txt;.')
+    if (-not [string]::IsNullOrWhiteSpace($sslCompanion)) {
+        $freezeArguments += @('--add-data', "$sslCompanion;.")
+    }
+    $freezeArguments += 'outline_mod.py'
+    Invoke-LoggedPython -ArgumentList $freezeArguments
     $buildArtifact = Get-Item -LiteralPath (Join-Path $buildRoot 'dist\COTWAnimalOutline.exe')
     $buildHash = Get-FileHash -LiteralPath $buildArtifact.FullName -Algorithm SHA256
     $buildResult = "PASS: $($buildArtifact.Name), $($buildArtifact.Length) bytes, SHA256 $($buildHash.Hash)"

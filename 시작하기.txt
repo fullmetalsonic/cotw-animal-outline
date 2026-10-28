@@ -1,4 +1,4 @@
-COTW 사냥감 윤곽 모드 v0.1.0 (Windows x64, 실험 버전)
+COTW 사냥감 윤곽 모드 v0.1.1 (Windows x64, 실험 버전)
 
 1. ZIP 전체를 원하는 폴더에 압축 해제합니다.
 2. COTWAnimalOutline.exe를 더블클릭합니다. Python 설치는 필요 없습니다.
