@@ -127,7 +127,7 @@ class ModeTests(unittest.TestCase):
                        backend.refresh_pet, backend.refresh_hellhound):
             self.assertEqual(method.call_count, 2)
         waiting, recovered = worker.messages.get_nowait(), worker.messages.get_nowait()
-        self.assertEqual(len(waiting), 8)
+        self.assertEqual(len(waiting), 9)
         self.assertEqual(waiting[7], "헬하운드 ON · 연결 대기")
         self.assertEqual(recovered[7], "헬하운드 ON")
         self.assertEqual(waiting[5:7], ("닌자 ON", "반려견 윤곽 ON"))
@@ -155,16 +155,19 @@ class ModeTests(unittest.TestCase):
         backend.ninja_mode = Mock()
         backend.pet_keeper = Mock()
         backend.hellhound_mode = Mock()
+        backend.silencer_mode = Mock()
         backend.corpse_renderer.close.side_effect = OSError("lease disconnected")
         backend.corpse_writer, backend.ninja_writer, backend.pet_writer, backend.hellhound_writer = 11, 12, 13, 14
+        backend.silencer_writer = 15
         with patch.object(mod.K, "CloseHandle", return_value=True) as close:
             with self.assertRaises(OSError):
                 backend.close()
         backend.ninja_mode.close.assert_called_once()
         backend.pet_keeper.close.assert_called_once()
         backend.hellhound_mode.close.assert_called_once()
+        backend.silencer_mode.close.assert_called_once()
         backend.game.close.assert_called_once()
-        self.assertEqual(sorted(c.args[0] for c in close.call_args_list), [11, 12, 13, 14, 99])
+        self.assertEqual(sorted(c.args[0] for c in close.call_args_list), [11, 12, 13, 14, 15, 99])
 
     def test_unverified_ninja_failure_still_turns_modes_off(self):
         backend = self.worker_backend()
@@ -260,10 +263,10 @@ class ModeTests(unittest.TestCase):
 
     def test_worker_routes_each_mode_without_cross_writes(self):
         real_backend = mod.LiveBackend
-        combinations = [(live, corpse, ninja, pet, hellhound) for live in (False, True) for corpse in (False, True)
-                        for ninja in (False, True) for pet in (False, True) for hellhound in (False, True)]
-        for live_on, corpse_on, ninja_on, pet_on, hellhound_on in combinations:
-            with self.subTest(live=live_on, corpse=corpse_on, ninja=ninja_on, pet=pet_on, hellhound=hellhound_on):
+        combinations = [(live, corpse, ninja, pet, hellhound, silencer) for live in (False, True) for corpse in (False, True)
+                        for ninja in (False, True) for pet in (False, True) for hellhound in (False, True) for silencer in (False,True)]
+        for live_on, corpse_on, ninja_on, pet_on, hellhound_on, silencer_on in combinations:
+            with self.subTest(live=live_on, corpse=corpse_on, ninja=ninja_on, pet=pet_on, hellhound=hellhound_on,silencer=silencer_on):
                 created = []
 
                 class Backend:
@@ -277,6 +280,7 @@ class ModeTests(unittest.TestCase):
                         self.ninja_updates = 0
                         self.pet_updates = 0
                         self.hellhound_updates = 0
+                        self.silencer_updates = 0
                         self.closed = False
                         created.append(self)
 
@@ -285,6 +289,7 @@ class ModeTests(unittest.TestCase):
                     def stop_ninja(self): pass
                     def stop_pet(self): pass
                     def stop_hellhound(self): pass
+                    def stop_silencer(self): pass
                     def validate(self, target, context): pass
                     def start_writing(self): self.writer = 1
                     def stop_writing(self): self.writer = None
@@ -299,6 +304,9 @@ class ModeTests(unittest.TestCase):
 
                     def refresh_hellhound(self):
                         self.hellhound_updates += 1
+
+                    def refresh_silencer(self):
+                        self.silencer_updates += 1
 
                     def snapshot(self):
                         targets = [row(), row(0), row(0, "bloodhound")]
@@ -323,6 +331,8 @@ class ModeTests(unittest.TestCase):
                     worker.pet_requested.set()
                 if hellhound_on:
                     worker.hellhound_requested.set()
+                if silencer_on:
+                    worker.silencer_requested.set()
                 with patch.object(mod, "LiveBackend", Backend):
                     worker.run()
                 self.assertEqual(len(created), 1)
@@ -332,7 +342,40 @@ class ModeTests(unittest.TestCase):
                 self.assertEqual(backend.ninja_updates, int(ninja_on))
                 self.assertEqual(backend.pet_updates, int(pet_on))
                 self.assertEqual(backend.hellhound_updates, int(hellhound_on))
+                self.assertEqual(backend.silencer_updates, int(silencer_on))
                 self.assertTrue(backend.closed)
+
+    def test_master_toggle_clears_partial_selection_then_enables_all(self):
+        worker=mod.ModWorker()
+        self.assertFalse(any(e.is_set() for e in worker.selections()))
+        worker.silencer_requested.set()
+        worker.toggle_all()
+        self.assertFalse(any(e.is_set() for e in worker.selections()))
+        worker.toggle_all()
+        self.assertEqual(len(worker.selections()),6)
+        self.assertTrue(all(e.is_set() for e in worker.selections()))
+        worker.controller.enable((1,2))
+        worker.all_off()
+        self.assertFalse(worker.controller.enabled)
+        self.assertFalse(any(e.is_set() for e in worker.selections()))
+        worker.close()
+        worker.all_on()
+        self.assertFalse(any(e.is_set() for e in worker.selections()))
+
+    def test_silencer_transition_keeps_all_requests_and_recovers(self):
+        backend=self.worker_backend()
+        backend.refresh_silencer.side_effect=[mod.TransientNinjaState("world rebinding"),None]
+        worker=mod.ModWorker()
+        worker.stopping=OneIteration(limit=2)
+        worker.all_on()
+        with patch.object(mod,"LiveBackend",return_value=backend):
+            worker.run()
+        waiting,recovered=worker.messages.get_nowait(),worker.messages.get_nowait()
+        self.assertEqual(waiting[8],"소음기 ON · 연결 대기")
+        self.assertEqual(recovered[8],"소음기 ON · 롱보우")
+        self.assertTrue(all(e.is_set() for e in worker.selections()))
+        for name in ("write","refresh_corpses","refresh_ninja","refresh_pet","refresh_hellhound","refresh_silencer"):
+            self.assertEqual(getattr(backend,name).call_count,2)
 
 
 if __name__ == "__main__":

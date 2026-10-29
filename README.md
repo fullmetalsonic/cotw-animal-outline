@@ -1,53 +1,55 @@
 # COTW Animal Outline
 
-theHunter: Call of the Wild 싱글플레이용 Windows 모드입니다. 생체·사체 윤곽, 닌자, 반려견 윤곽 유지, Hellhound를 각각 따로 켜고 끌 수 있습니다. **[Windows 배포 다운로드](https://github.com/fullmetalsonic/cotw-animal-outline/releases/latest)**
+A portable Windows mod for **single-player** `theHunter: Call of the Wild`. It provides six independent, optional modes for animal outlines, AI detection, dog retrieval, and weapon audio.
 
-> **생체 윤곽 플레이 확인 (2026-10-29):** 사용자가 직접 플레이해 흰색과 파랑 모두 정상 표시된다고 확인했습니다. 흰색은 제공된 화면에서도 확인했고, 파랑은 명시적인 플레이 보고로 확인했습니다. 모든 동물·장애물·사냥터에서의 표시를 보증하는 전수 검증은 아닙니다.
+**Download:** [Latest stable release](https://github.com/fullmetalsonic/cotw-animal-outline/releases/latest) · **[Validation details](VALIDATION.md)** · [한국어 안내](README.ko.md)
 
-## v0.3.0 기능
+## v0.4.0
 
-- **생체 윤곽:** 흰색 또는 파랑을 선택합니다. 새로 로드된 생체에도 적용합니다. 자동 탐지·발견 알림·동물 정보 공개를 일으키지 않습니다.
-- **사체 윤곽:** 생체와 별도로 색을 고르고 켭니다. 기본색은 주황 `#FF5900`입니다. 사용자가 나무·지형 뒤에서도 표시되는 것을 확인했습니다. 기본 사체 빛과의 깜박임 충돌을 줄이도록 전용 시각 경로를 사용합니다. 모델이 로드되지 않은 먼 사체는 표시되지 않으며, 로드되면 자동 적용됩니다.
-- **닌자 모드:** 창 아래쪽에서 따로 켜고 끕니다. 플레이어의 걷기·달리기와 현재 탑승한 ATV의 이동 소음 및 모습에 대한 AI 감지를 함께 차단합니다. 효과음·소음 게이지·냄새·발포 감지는 유지됩니다. 실제 게임에서 두 필터의 ON/OFF 전환을 확인했습니다. 양수 시각 점수 차단은 CPU 검사로 확인했으며, 실제 동물 행동과 ATV 시각 차단 실기는 아직 확인하지 않았습니다. 자세한 근거는 [VALIDATION.md](VALIDATION.md)에 기록했습니다.
-- **반려견 윤곽 유지:** 전체 동물 흔적을 숨겨도 반려견의 원래 윤곽만 유지합니다. 게임의 사냥개 윤곽 ON/OFF·설정색·가림 판정을 따릅니다. 닌자 효과는 반려견에도 그대로 적용되며, 반려견을 감지 차단 대상에서 제외하지 않습니다.
-- **헬하운드(Hellhound):** 기본 OFF인 독립 모드입니다. 리트리버 회수 기능이 있는 반려견이 필요합니다. ON이면 원래 1급 사체 회수 동작을 유지하면서 2~9급 사체를 일반 회수 명령으로 옮겨 플레이어 앞에 놓습니다. 플레이어가 `E`를 눌러 일반 회수/트로피 화면을 직접 엽니다. 사체의 등급·무게·트로피 정보와 게임의 기존 이동 계산을 유지합니다. 입에 물고 있는 표현과 내려놓은 자세는 구현 범위가 아닙니다. 세부 조건과 실기 범위는 [VALIDATION.md](VALIDATION.md)를 참조하세요.
-- 모든 모드는 서로 독립적이며 앱을 다시 실행하면 기본 OFF입니다. 게임을 먼저 또는 나중에 실행해도 됩니다. 사냥터에 들어간 뒤 원하는 모드만 ON으로 선택합니다. 창을 닫으면 갱신이 중단되고 임시 효과는 게임 진행 중 잠시 후 해제됩니다.
+v0.4.0 adds the Longbow Silencer, automatic Korean/English UI, master switches, and a global toggle shortcut.
 
-닌자 ON이어도 우측 아래 소음계와 눈 모양은 그대로 표시됩니다. 이 HUD는 플레이어의 기본 소음·노출 상태이며, 모드가 처리하는 개별 동물의 AI 청각·시각 계산과는 별도입니다.
+### Modes
 
-승하차 등으로 플레이어·차량 연결이 바뀌면 닌자 ON 선택을 유지한 채 잠시 대기하고, 연결을 다시 검증한 뒤 자동으로 적용합니다. 이 전환으로 생체·사체 윤곽이 함께 꺼지지 않도록 수정했습니다. 버전 불일치·외부 패치·쓰기 실패에 대한 중단 검사는 유지합니다.
+Each mode has its own switch and is OFF by default. Use **ALL ON** or **ALL OFF** at the top of the window to change all six together. `Ctrl+Shift+F10` toggles all six: if any mode is ON, it turns all OFF; if all are OFF, it turns all ON. The shortcut is registered globally while the app is running. There is no F1 hotkey.
 
-## 실행
+- **Live animal outline:** Choose white or blue. Applies to loaded animals, including animals loaded later. It does not spot animals automatically or reveal animal information.
+- **Carcass outline:** Independently highlights loaded carcasses in a chosen color (default orange, `#FF5900`). It does not force distant, unloaded carcasses to appear.
+- **Ninja:** Suppresses AI hearing and local visual detection of the player and the player's current ATV movement. Player audio, HUD, scent, and gunshot events remain unchanged unless **Silencer** is enabled separately.
+- **Keep Dog Outline:** Preserves the game's native pet outline, color, and occlusion behavior while other animal clues are hidden. **Ninja** still applies to the pet.
+- **Hellhound:** Requires a dog with the Retriever job. Keeps the native class 1 fetch behavior and allows classes 2–9 to be brought to the player and placed about 3 m in front for the normal `E` harvest interaction. It does not edit class, mass, trophy, or damage data, and it does not harvest automatically. Actual class 2 and 3 interactions were user-verified; classes 4–9 were CPU-only checks. Realistic large-corpse carrying poses are not implemented.
+- **Silencer:** Uses longbow firing audio and bow impact audio for all 137 supported weapons (70 rifles, 20 handguns, 28 shotguns, and 19 archery weapons). AI fire/impact calculations use the native longbow profile: fire score 2 through 10 m falls to zero at 75 m; impact score 1 through 25 m falls to zero at 50 m. It does not change ballistics, damage, ammunition, or reload sounds. CPU/native audio and AI calculations passed; **in-game playback and listening have not been verified**. Source-event distance/parameter defaults remain; exact audible-volume equivalence is not claimed. See [VALIDATION.md](VALIDATION.md).
 
-1. [최신 정식 배포 ZIP](https://github.com/fullmetalsonic/cotw-animal-outline/releases/latest)을 원하는 폴더에 압축 풉니다. v0.3.0에는 기존 네 기능과 Hellhound가 포함됩니다.
-2. `COTWAnimalOutline.exe`를 실행합니다. Python 설치나 게임 폴더로 파일 복사는 필요 없습니다.
-3. 게임을 실행하고 싱글플레이 사냥터에 들어갑니다. 게임을 먼저 실행해도 됩니다.
-4. 모드 창에서 필요한 기능만 각각 켭니다. Hellhound를 사용하려면 게임 내 반려견에 Retriever 직업이 있어야 하며, 해당 모드도 직접 ON으로 바꿉니다.
+Closing the app stops further updates and restores owned native hooks. Silencer OFF restores original sounds for newly started events. The app can run before or after the game. If the pet or Retriever mode should remain active while you wait for a dog, you can leave that mode ON.
 
-실행 중인 게임 프로세스에서 설치 경로를 자동으로 찾으므로 드라이브, 공백, 한글 경로를 직접 지정할 필요가 없습니다. 게임 파일·세이브·Steam 실행 옵션은 편집하지 않습니다. 실행 중인 게임 메모리의 시각·AI·회수 경로에 임시 후크를 적용하며, 지원 버전과 EXE 해시를 확인한 뒤 동작합니다.
+## Requirements and scope
 
-## 지원 범위와 한계
+- Windows 10 or 11, x64; Steam build **26051119**, game code **3366163**.
+- Supported game executable SHA-256: `33c8306e52c5541a5b87e4af576f4149f3da0c23b36775372ec6c41adbab73ca`.
+- Single-player only. Other game builds and executables are unsupported.
+- No Python installation is needed. The app finds the install directory from the running game process, including installations on other drives and paths containing spaces or Korean characters.
+- The app does not edit game files, saves, or Steam launch options. It applies temporary hooks to the running game's memory.
+- The existing external-object lifetime race is not fully eliminated, and dynamic SEH/unwind registration is not implemented.
 
-- Windows 10/11 x64, Steam build **26051119**, game code **3366163**. 검증 대상 EXE SHA-256: `33c8306e52c5541a5b87e4af576f4149f3da0c23b36775372ec6c41adbab73ca`. 다른 실행 파일은 검증하지 않았습니다.
-- 싱글플레이만 검증 대상으로 삼았습니다. 전 종·전 맵·멀티플레이·장시간 플레이·다른 PC에서의 실기는 미검증입니다.
-- 윤곽 모드는 현재 로드된 야생동물 모델만 갱신합니다. 렌더/모델 거리 밖의 동물이나 사체를 생성·강제 로드하지 않습니다. 반려견은 생체 대상에서 제외됩니다.
-- Hellhound 실기에서는 2급과 3급 사체를 옮긴 뒤 `E`로 일반 수확 화면이 열리는 것을 확인했습니다. 4~9급·모든 사체·종·맵의 실기는 미검증이며, 이 모드는 사체를 자동 수확하지 않습니다.
-- 외부 객체 해제와 갱신 사이의 경쟁 가능성을 완전히 제거하지 못했습니다. 동적 SEH/unwind 등록은 구현되지 않았으며, 예외 상황에서 native 스택 복구를 보증하지 않습니다.
-- 닌자 OFF와 다시 ON 했을 때의 계산 복귀는 실제 게임에서 확인했습니다. 활성 상태의 모드 프로세스를 강제 종료하는 시험과 실제 발포 시험은 수행하지 않았습니다. 검증 근거와 한계는 [VALIDATION.md](VALIDATION.md)에 기록했습니다.
+## Run
 
-## 업데이트
+1. Download and extract the [latest stable release ZIP](https://github.com/fullmetalsonic/cotw-animal-outline/releases/latest) to a folder of your choice.
+2. Run `COTWAnimalOutline.exe`.
+3. Start the game and enter a single-player reserve, if you have not already.
+4. Turn on only the modes you want. Hellhound requires a Retriever dog; enable its switch separately.
 
-정식 배포판에서는 시작 시 비차단으로 최신 정식 GitHub Release를 확인하고 `업데이트 확인` 버튼으로 수동 재확인할 수 있습니다. 사전 릴리스·초안·단순 커밋은 제외합니다. 토큰 없이 버전·업데이트 필요 여부·Release 링크를 표시하며 자동 다운로드나 설치는 하지 않습니다. 네트워크 오류나 API 제한이 모드 사용을 막지 않습니다.
+The interface uses Korean when the Windows display language is Korean and English for other Windows display languages. This is independent of the Windows region setting.
 
-## 소스 실행·빌드
+## Updates
 
-실행 파일 사용에는 별도 런타임이 필요 없습니다. 소스는 Python 3.12 x64와 Tkinter를 사용합니다.
+The app checks for the latest stable GitHub Release at startup without blocking use. You can also select **Check for updates**. It compares stable semantic versions and ignores pre-releases, drafts, and commits. It uses no token, does not download or install updates automatically, and network errors do not prevent the mod from running.
+
+## Build from source
+
+Python 3.12 x64 is required to build from source; the packaged app itself needs no Python installation. `build.ps1` uses pinned dependencies and builds with Tkinter.
 
 ```powershell
-python outline_mod.py
-python outline_mod.py --self-test
-python -m unittest discover -v
 .\build.ps1
+.build-venv\Scripts\python.exe -m unittest discover -v
 ```
 
-빌드는 프로젝트 전용 가상 환경과 고정된 빌드 의존성을 사용합니다. 실행에 필요한 제3자 라이선스 고지는 ZIP과 실행 파일 안에 포함됩니다.
+Third-party license notices are included with the release.

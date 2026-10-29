@@ -11,6 +11,7 @@ import time
 
 import game_memory as probe
 from app_version import VERSION
+from i18n import LANGUAGE,tr
 from ninja_mode import TransientNinjaState
 from pet_outline import TransientPetState
 from hellhound_mode import TransientHellhoundState
@@ -111,6 +112,8 @@ class LiveBackend:
         self.pet_writer = None
         self.hellhound_mode = None
         self.hellhound_writer = None
+        self.silencer_mode = None
+        self.silencer_writer = None
 
     def set_color(self, color):
         if color not in PAYLOADS:
@@ -294,6 +297,25 @@ class LiveBackend:
         if self.hellhound_mode:
             self.hellhound_mode.disable()
 
+    def refresh_silencer(self):
+        if self.silencer_mode is None:
+            from silencer_mode import SilencerMode
+            self.check()
+            self.silencer_writer = K.OpenProcess(0x438, False, self.game.pid)
+            if not self.silencer_writer:
+                raise RuntimeError("소음기 모드를 위한 게임 프로세스 접근 권한을 얻지 못했습니다")
+            try:
+                self.silencer_mode = SilencerMode(self.game,self.silencer_writer)
+            except Exception:
+                K.CloseHandle(self.silencer_writer)
+                self.silencer_writer = None
+                raise
+        self.silencer_mode.publish()
+
+    def stop_silencer(self):
+        if self.silencer_mode:
+            self.silencer_mode.disable()
+
     def close(self):
         try:
             if self.corpse_renderer:
@@ -311,13 +333,17 @@ class LiveBackend:
                         if self.hellhound_mode:
                             self.hellhound_mode.close()
                     finally:
-                        for name in ("corpse_writer", "ninja_writer", "pet_writer", "hellhound_writer"):
-                            handle = getattr(self, name)
-                            if handle:
-                                K.CloseHandle(handle)
-                                setattr(self, name, None)
-                        self.stop_writing()
-                        self.game.close()
+                        try:
+                            if self.silencer_mode:
+                                self.silencer_mode.close()
+                        finally:
+                            for name in ("corpse_writer", "ninja_writer", "pet_writer", "hellhound_writer", "silencer_writer"):
+                                handle = getattr(self, name)
+                                if handle:
+                                    K.CloseHandle(handle)
+                                    setattr(self, name, None)
+                            self.stop_writing()
+                            self.game.close()
 
 
 class RefreshController:
@@ -383,6 +409,7 @@ class ModWorker(threading.Thread):
         self.ninja_requested = threading.Event()
         self.pet_requested = threading.Event()
         self.hellhound_requested = threading.Event()
+        self.silencer_requested = threading.Event()
         self.stopping = threading.Event()
         self.messages = queue.Queue()
         self.controller = RefreshController()
@@ -397,6 +424,7 @@ class ModWorker(threading.Thread):
         self.ninja_off()
         self.pet_off()
         self.hellhound_off()
+        self.silencer_off()
         self.stopping.set()
 
     def ninja_off(self):
@@ -407,6 +435,26 @@ class ModWorker(threading.Thread):
 
     def hellhound_off(self):
         self.hellhound_requested.clear()
+
+    def silencer_off(self):
+        self.silencer_requested.clear()
+
+    def selections(self):
+        return (self.requested,self.corpse_requested,self.ninja_requested,self.pet_requested,
+                self.hellhound_requested,self.silencer_requested)
+
+    def all_on(self):
+        if not self.stopping.is_set():
+            for selection in self.selections():
+                selection.set()
+
+    def all_off(self):
+        for selection in self.selections():
+            selection.clear()
+        self.controller.disable()
+
+    def toggle_all(self):
+        self.all_off() if any(selection.is_set() for selection in self.selections()) else self.all_on()
 
     def corpse_off(self):
         self.corpse_requested.clear()
@@ -447,9 +495,11 @@ class ModWorker(threading.Thread):
                         backend.stop_pet()
                     if not self.hellhound_requested.is_set():
                         backend.stop_hellhound()
+                    if not self.silencer_requested.is_set():
+                        backend.stop_silencer()
                     active = (self.requested.is_set() or self.corpse_requested.is_set()
                               or self.ninja_requested.is_set() or self.pet_requested.is_set()
-                              or self.hellhound_requested.is_set())
+                              or self.hellhound_requested.is_set() or self.silencer_requested.is_set())
                     if active or time.monotonic() - last_poll >= 1:
                         rows, context, summary = backend.snapshot()
                         count = sum(backend.eligible(row) for row in rows)
@@ -500,6 +550,16 @@ class ModWorker(threading.Thread):
                             if not self.hellhound_requested.is_set():
                                 backend.stop_hellhound()
                                 hellhound_state = "헬하운드 OFF"
+                        silencer_state = "소음기 OFF"
+                        if self.silencer_requested.is_set():
+                            silencer_state = "소음기 ON · 롱보우"
+                            try:
+                                backend.refresh_silencer()
+                            except TransientNinjaState:
+                                silencer_state = "소음기 ON · 연결 대기"
+                            if not self.silencer_requested.is_set():
+                                backend.stop_silencer()
+                                silencer_state = "소음기 OFF"
                         if active:
                             last_error = None
                         live_on = self.requested.is_set() and self.controller.enabled
@@ -507,12 +567,12 @@ class ModWorker(threading.Thread):
                                   else last_error or "살아 있는 사냥감의 윤곽 갱신이 중지되었습니다.")
                         self.messages.put(("모드 ON" if live_on else "연결됨 · 모드 OFF", count, detail,
                                            "사체 ON" if self.corpse_requested.is_set() else "사체 OFF", corpse_count,
-                                           ninja_state, pet_state, hellhound_state))
+                                           ninja_state, pet_state, hellhound_state, silencer_state))
                         last_poll = time.monotonic()
                 except Exception as error:
                     was_on = (self.requested.is_set() or self.controller.enabled or self.corpse_requested.is_set()
                               or self.ninja_requested.is_set() or self.pet_requested.is_set()
-                              or self.hellhound_requested.is_set())
+                              or self.hellhound_requested.is_set() or self.silencer_requested.is_set())
                     if was_on:
                         last_error = str(error)
                     self.off()
@@ -520,6 +580,7 @@ class ModWorker(threading.Thread):
                     self.ninja_off()
                     self.pet_off()
                     self.hellhound_off()
+                    self.silencer_off()
                     if backend:
                         try:
                             backend.close()
@@ -529,7 +590,7 @@ class ModWorker(threading.Thread):
                             pass
                         finally:
                             backend = None
-                    self.messages.put(("오류 · 모드 OFF" if was_on else "게임 연결 대기 · 모드 OFF", 0, str(error), "사체 OFF", 0, "닌자 OFF", "반려견 윤곽 OFF", "헬하운드 OFF"))
+                    self.messages.put(("오류 · 모드 OFF" if was_on else "게임 연결 대기 · 모드 OFF", 0, str(error), "사체 OFF", 0, "닌자 OFF", "반려견 윤곽 OFF", "헬하운드 OFF", "소음기 OFF"))
                     self.stopping.wait(1)
                 self.stopping.wait(INTERVAL)
         finally:
@@ -548,10 +609,10 @@ def gui(color="white"):
     try:
         mutex = acquire_single_instance()
     except RuntimeError as error:
-        messagebox.showerror("COTW 사냥감 윤곽 모드", str(error))
+        messagebox.showerror(tr("COTW 게임 모드"), tr(str(error)))
         return
     if mutex is None:
-        messagebox.showinfo("COTW 사냥감 윤곽 모드", "사냥감 윤곽 모드가 이미 열려 있습니다.\n기존 창에서 ON/OFF를 조작하세요.")
+        messagebox.showinfo(tr("COTW 게임 모드"), tr("사냥감 윤곽 모드가 이미 열려 있습니다.\n기존 창에서 ON/OFF를 조작하세요."))
         return
     try:
         run_gui(color)
@@ -566,8 +627,19 @@ def run_gui(color="white"):
     shell.SetCurrentProcessExplicitAppUserModelID.argtypes = [W.LPCWSTR]
     shell.SetCurrentProcessExplicitAppUserModelID.restype = C.c_long
     shell.SetCurrentProcessExplicitAppUserModelID("Local.COTW.WildAnimalOutlineMod")
+    class LocalizedStringVar(tk.StringVar):
+        def __init__(self,*args,**kwargs):
+            if "value" in kwargs:
+                kwargs["value"]=tr(kwargs["value"])
+            super().__init__(*args,**kwargs)
+
+        def set(self,value):
+            super().set(tr(value))
+
+    ui_font="맑은 고딕" if LANGUAGE=="ko" else "Segoe UI"
     root = tk.Tk()
-    root.title("COTW 사냥감 윤곽 모드")
+    root.option_add("*Font",(ui_font,10))
+    root.title(tr("COTW 게임 모드"))
     root.geometry(f"590x{max(550, min(1040, root.winfo_screenheight() - 90))}")
     root.minsize(490, 550)
     shell_panel = ttk.Frame(root)
@@ -581,18 +653,31 @@ def run_gui(color="white"):
     panel_window = canvas.create_window((0, 0), window=panel, anchor="nw")
     canvas.bind("<Configure>", lambda event: canvas.itemconfigure(panel_window, width=event.width))
     canvas.bind_all("<MouseWheel>", lambda event: canvas.yview_scroll(-int(event.delta / 120), "units"))
-    ttk.Label(panel, text="사냥감 · 사체 · 반려견 · 닌자 모드", font=("맑은 고딕", 17, "bold")).pack(anchor="w")
-    ttk.Label(panel, text="대상 빌드: 26051119 · 싱글플레이 전용").pack(anchor="w", pady=(5, 18))
-    status = tk.StringVar(value="게임 연결 확인 중 · 모드 OFF")
-    count = tk.StringVar(value="살아 있는 사냥감: 0마리")
-    detail = tk.StringVar(value="사냥터를 불러온 뒤 모드를 켜세요.")
-    ttk.Label(panel, textvariable=status, font=("맑은 고딕", 12, "bold")).pack(anchor="w")
-    ttk.Label(panel, textvariable=count).pack(anchor="w", pady=8)
     worker = ModWorker(color)
-    color_selection = tk.StringVar(value=color)
+    from global_hotkey import GlobalHotkey, HOTKEY_LABEL
+    hotkey = GlobalHotkey()
+    ttk.Label(panel, text=tr("COTW 게임 모드"), font=(ui_font, 17, "bold")).pack(anchor="w")
+    ttk.Label(panel, text=tr("대상 빌드: 26051119 · 싱글플레이 전용")).pack(anchor="w", pady=(5, 18))
+    master_panel = ttk.LabelFrame(panel,text=tr("전체 모드"),padding=10)
+    master_panel.pack(fill="x",pady=(0,12))
+    master_status = LocalizedStringVar(value="전체 OFF · 0/6")
+    ttk.Label(master_panel,textvariable=master_status).pack(anchor="w")
+    master_buttons = ttk.Frame(master_panel)
+    master_buttons.pack(fill="x",pady=(6,4))
+    ttk.Button(master_buttons,text=tr("전체 ON"),command=worker.all_on).pack(side="left",fill="x",expand=True,padx=(0,6))
+    ttk.Button(master_buttons,text=tr("전체 OFF"),command=worker.all_off).pack(side="left",fill="x",expand=True)
+    hotkey_status = LocalizedStringVar(value=f"{HOTKEY_LABEL} · 단축키 등록 중")
+    hotkey_label = ttk.Label(master_panel,textvariable=hotkey_status,wraplength=440)
+    hotkey_label.pack(anchor="w")
+    status = LocalizedStringVar(value="게임 연결 확인 중 · 모드 OFF")
+    count = LocalizedStringVar(value="살아 있는 사냥감: 0마리")
+    detail = LocalizedStringVar(value="사냥터를 불러온 뒤 모드를 켜세요.")
+    ttk.Label(panel, textvariable=status, font=(ui_font, 12, "bold")).pack(anchor="w")
+    ttk.Label(panel, textvariable=count).pack(anchor="w", pady=8)
+    color_selection = LocalizedStringVar(value=color)
     color_panel = ttk.Frame(panel)
     color_panel.pack(anchor="w", fill="x", pady=5)
-    ttk.Label(color_panel, text="윤곽 색상 (OFF에서 선택):").pack(side="left", padx=(0, 10))
+    ttk.Label(color_panel, text=tr("윤곽 색상 (OFF에서 선택):")).pack(side="left", padx=(0, 10))
     color_buttons = []
 
     def choose_color():
@@ -601,7 +686,7 @@ def run_gui(color="white"):
         detail.set(f"{COLOR_LABELS[color_selection.get()]}을 선택했습니다. 모드 ON을 누르면 적용됩니다.")
 
     for value in ("white", "blue"):
-        button = ttk.Radiobutton(color_panel, text=COLOR_LABELS[value], value=value,
+        button = ttk.Radiobutton(color_panel, text=tr(COLOR_LABELS[value]), value=value,
                                  variable=color_selection, command=choose_color)
         button.pack(side="left", padx=5)
         color_buttons.append(button)
@@ -613,7 +698,7 @@ def run_gui(color="white"):
             button.state(["disabled"])
         worker.requested.set()
 
-    ttk.Button(buttons, text="모드 ON", command=on).pack(side="left", fill="x", expand=True, padx=(0, 6))
+    ttk.Button(buttons, text=tr("모드 ON"), command=on).pack(side="left", fill="x", expand=True, padx=(0, 6))
 
     def off():
         worker.off()
@@ -622,18 +707,18 @@ def run_gui(color="white"):
         status.set("모드 OFF")
         detail.set("윤곽 갱신을 중지했습니다. 임시 윤곽은 게임 진행 중 잠시 후 사라집니다.")
 
-    ttk.Button(buttons, text="모드 OFF", command=off).pack(side="left", fill="x", expand=True)
+    ttk.Button(buttons, text=tr("모드 OFF"), command=off).pack(side="left", fill="x", expand=True)
     detail_label = ttk.Label(panel, textvariable=detail, wraplength=465)
     detail_label.pack(anchor="w", fill="x", pady=12)
-    corpse_panel = ttk.LabelFrame(panel, text="사체 표시 · 독립 ON/OFF", padding=10)
+    corpse_panel = ttk.LabelFrame(panel, text=tr("사체 표시 · 독립 ON/OFF"), padding=10)
     corpse_panel.pack(fill="x", pady=(0, 10))
-    corpse_status = tk.StringVar(value="사체 OFF · 대상 0마리")
-    corpse_hex = tk.StringVar(value="사체 색상: #FF5900 · 변경")
+    corpse_status = LocalizedStringVar(value="사체 OFF · 대상 0마리")
+    corpse_hex = LocalizedStringVar(value="사체 색상: #FF5900 · 변경")
     ttk.Label(corpse_panel, textvariable=corpse_status).pack(anchor="w", pady=(0, 7))
 
     def choose_corpse_color():
         selected, hex_color = colorchooser.askcolor(color="#%02x%02x%02x" % tuple(
-            round(v * 255) for v in worker.corpse_color), parent=root, title="사체 윤곽 색상")
+            round(v * 255) for v in worker.corpse_color), parent=root, title=tr("사체 윤곽 색상"))
         if selected is not None:
             worker.set_corpse_color(tuple(v / 255.0 for v in selected))
             corpse_hex.set(f"사체 색상: {hex_color.upper()} · 변경")
@@ -652,14 +737,14 @@ def run_gui(color="white"):
         corpse_color_button.state(["!disabled"])
         corpse_status.set("사체 OFF")
 
-    ttk.Button(corpse_buttons, text="사체 ON", command=corpse_on).pack(side="left", fill="x", expand=True, padx=(0, 6))
-    ttk.Button(corpse_buttons, text="사체 OFF", command=corpse_off).pack(side="left", fill="x", expand=True)
-    corpse_help = ttk.Label(corpse_panel, text="사체만 별도 색상으로 표시합니다. OFF에서는 게임의 기본 사체 표시로 돌아갑니다.",
+    ttk.Button(corpse_buttons, text=tr("사체 ON"), command=corpse_on).pack(side="left", fill="x", expand=True, padx=(0, 6))
+    ttk.Button(corpse_buttons, text=tr("사체 OFF"), command=corpse_off).pack(side="left", fill="x", expand=True)
+    corpse_help = ttk.Label(corpse_panel, text=tr("사체만 별도 색상으로 표시합니다. OFF에서는 게임의 기본 사체 표시로 돌아갑니다."),
                             wraplength=440)
     corpse_help.pack(anchor="w", fill="x")
-    ninja_panel = ttk.LabelFrame(panel, text="닌자 모드 · 독립 ON/OFF", padding=10)
+    ninja_panel = ttk.LabelFrame(panel, text=tr("닌자 모드 · 독립 ON/OFF"), padding=10)
     ninja_panel.pack(fill="x", pady=(0, 10))
-    ninja_status = tk.StringVar(value="닌자 OFF")
+    ninja_status = LocalizedStringVar(value="닌자 OFF")
     ttk.Label(ninja_panel, textvariable=ninja_status).pack(anchor="w", pady=(0, 7))
     ninja_buttons = ttk.Frame(ninja_panel)
     ninja_buttons.pack(fill="x", pady=(0, 8))
@@ -671,15 +756,15 @@ def run_gui(color="white"):
         worker.ninja_off()
         ninja_status.set("닌자 OFF")
 
-    ttk.Button(ninja_buttons, text="닌자 ON", command=ninja_on).pack(side="left", fill="x", expand=True, padx=(0, 6))
-    ttk.Button(ninja_buttons, text="닌자 OFF", command=ninja_off).pack(side="left", fill="x", expand=True)
-    ninja_help = ttk.Label(ninja_panel, text="이동·탈것 소음과 플레이어의 모습에 대한 AI 감지를 차단합니다. 효과음과 게임 소음 게이지는 유지되며, 냄새·발포 감지는 그대로입니다. 승하차 같은 상태 전환에는 잠시 대기 후 자동으로 다시 적용합니다.",
+    ttk.Button(ninja_buttons, text=tr("닌자 ON"), command=ninja_on).pack(side="left", fill="x", expand=True, padx=(0, 6))
+    ttk.Button(ninja_buttons, text=tr("닌자 OFF"), command=ninja_off).pack(side="left", fill="x", expand=True)
+    ninja_help = ttk.Label(ninja_panel, text=tr("이동·탈것 소음과 플레이어의 모습에 대한 AI 감지를 차단합니다. 효과음과 게임 소음 게이지는 유지되며, 냄새·발포 감지는 그대로입니다. 승하차 같은 상태 전환에는 잠시 대기 후 자동으로 다시 적용합니다."),
                           wraplength=440)
     ninja_help.pack(anchor="w", fill="x")
 
-    pet_panel = ttk.LabelFrame(panel, text="반려견 윤곽 유지 · 독립 ON/OFF", padding=10)
+    pet_panel = ttk.LabelFrame(panel, text=tr("반려견 윤곽 유지 · 독립 ON/OFF"), padding=10)
     pet_panel.pack(fill="x", pady=(0, 10))
-    pet_status = tk.StringVar(value="반려견 윤곽 OFF")
+    pet_status = LocalizedStringVar(value="반려견 윤곽 OFF")
     ttk.Label(pet_panel, textvariable=pet_status).pack(anchor="w", pady=(0, 7))
     pet_buttons = ttk.Frame(pet_panel)
     pet_buttons.pack(fill="x", pady=(0, 8))
@@ -691,14 +776,14 @@ def run_gui(color="white"):
         worker.pet_off()
         pet_status.set("반려견 윤곽 OFF")
 
-    ttk.Button(pet_buttons, text="반려견 윤곽 ON", command=pet_on).pack(side="left", fill="x", expand=True, padx=(0, 6))
-    ttk.Button(pet_buttons, text="반려견 윤곽 OFF", command=pet_off).pack(side="left", fill="x", expand=True)
-    pet_help = ttk.Label(pet_panel, text="전체 동물 흔적 숨김을 유지하면서 반려견 윤곽만 표시합니다. 게임의 사냥개 윤곽 켜기·색상과 원래 가림 판정을 따릅니다. 닌자 효과는 반려견에도 유지됩니다.", wraplength=440)
+    ttk.Button(pet_buttons, text=tr("반려견 윤곽 ON"), command=pet_on).pack(side="left", fill="x", expand=True, padx=(0, 6))
+    ttk.Button(pet_buttons, text=tr("반려견 윤곽 OFF"), command=pet_off).pack(side="left", fill="x", expand=True)
+    pet_help = ttk.Label(pet_panel, text=tr("전체 동물 흔적 숨김을 유지하면서 반려견 윤곽만 표시합니다. 게임의 사냥개 윤곽 켜기·색상과 원래 가림 판정을 따릅니다. 닌자 효과는 반려견에도 유지됩니다."), wraplength=440)
     pet_help.pack(anchor="w", fill="x")
 
-    hellhound_panel = ttk.LabelFrame(panel, text="헬하운드 모드 · 독립 ON/OFF", padding=10)
+    hellhound_panel = ttk.LabelFrame(panel, text=tr("헬하운드 모드 · 독립 ON/OFF"), padding=10)
     hellhound_panel.pack(fill="x", pady=(0, 10))
-    hellhound_status = tk.StringVar(value="헬하운드 OFF")
+    hellhound_status = LocalizedStringVar(value="헬하운드 OFF")
     ttk.Label(hellhound_panel, textvariable=hellhound_status).pack(anchor="w", pady=(0, 7))
     hellhound_buttons = ttk.Frame(hellhound_panel)
     hellhound_buttons.pack(fill="x", pady=(0, 8))
@@ -707,14 +792,29 @@ def run_gui(color="white"):
         worker.hellhound_off()
         hellhound_status.set("헬하운드 OFF")
 
-    ttk.Button(hellhound_buttons, text="헬하운드 ON", command=worker.hellhound_requested.set).pack(side="left", fill="x", expand=True, padx=(0, 6))
-    ttk.Button(hellhound_buttons, text="헬하운드 OFF", command=hellhound_off).pack(side="left", fill="x", expand=True)
-    hellhound_help = ttk.Label(hellhound_panel, text="리트리버가 1~9등급 사체를 회수하도록 허용합니다. 원래 거리·상태 조건은 유지합니다. 큰 사체는 픽업 성공 시 플레이어 약 3m 앞에 옮깁니다. 사체를 E로 정상 수확할 수 있으며 실제 등급·무게는 바꾸지 않습니다. 리트리버 DLC와 활성 반려견이 필요합니다.", wraplength=440)
+    ttk.Button(hellhound_buttons, text=tr("헬하운드 ON"), command=worker.hellhound_requested.set).pack(side="left", fill="x", expand=True, padx=(0, 6))
+    ttk.Button(hellhound_buttons, text=tr("헬하운드 OFF"), command=hellhound_off).pack(side="left", fill="x", expand=True)
+    hellhound_help = ttk.Label(hellhound_panel, text=tr("리트리버가 1~9등급 사체를 회수하도록 허용합니다. 원래 거리·상태 조건은 유지합니다. 큰 사체는 픽업 성공 시 플레이어 약 3m 앞에 옮깁니다. 사체를 E로 정상 수확할 수 있으며 실제 등급·무게는 바꾸지 않습니다. 리트리버 DLC와 활성 반려견이 필요합니다."), wraplength=440)
     hellhound_help.pack(anchor="w", fill="x")
-    updates_panel = ttk.LabelFrame(panel, text="업데이트", padding=9)
+    silencer_panel = ttk.LabelFrame(panel,text=tr("소음기 모드 · 독립 ON/OFF"),padding=10)
+    silencer_panel.pack(fill="x",pady=(0,10))
+    silencer_status = LocalizedStringVar(value="소음기 OFF")
+    ttk.Label(silencer_panel,textvariable=silencer_status).pack(anchor="w",pady=(0,7))
+    silencer_buttons = ttk.Frame(silencer_panel)
+    silencer_buttons.pack(fill="x",pady=(0,8))
+
+    def silencer_off():
+        worker.silencer_off()
+        silencer_status.set("소음기 OFF")
+
+    ttk.Button(silencer_buttons,text=tr("소음기 ON"),command=worker.silencer_requested.set).pack(side="left",fill="x",expand=True,padx=(0,6))
+    ttk.Button(silencer_buttons,text=tr("소음기 OFF"),command=silencer_off).pack(side="left",fill="x",expand=True)
+    silencer_help = ttk.Label(silencer_panel,text=tr("모든 무기의 발사음은 롱보우, 탄착음은 활 소리로 바꿉니다. 사냥감의 발사·탄착 소음 계산도 롱보우 기준으로 적용합니다. 탄도·피해·탄약과 장전 소리는 유지합니다. OFF에서는 원래 소리와 계산으로 돌아갑니다."),wraplength=440)
+    silencer_help.pack(anchor="w",fill="x")
+    updates_panel = ttk.LabelFrame(panel, text=tr("업데이트"), padding=9)
     updates_panel.pack(fill="x", pady=(3, 0))
-    versions = tk.StringVar(value=f"현재 {VERSION} / 최신 확인 중")
-    update_message = tk.StringVar(value="확인 중에도 모드를 사용할 수 있습니다.")
+    versions = LocalizedStringVar(value=f"현재 {VERSION} / 최신 확인 중")
+    update_message = LocalizedStringVar(value="확인 중에도 모드를 사용할 수 있습니다.")
     ttk.Label(updates_panel, textvariable=versions).pack(anchor="w")
     update_label = ttk.Label(updates_panel, textvariable=update_message, wraplength=450)
     update_label.pack(anchor="w", fill="x", pady=5)
@@ -746,9 +846,9 @@ def run_gui(color="white"):
             import webbrowser
             webbrowser.open(release_link)
 
-    check_button = ttk.Button(update_buttons, text="업데이트 확인", command=request_update)
+    check_button = ttk.Button(update_buttons, text=tr("업데이트 확인"), command=request_update)
     check_button.pack(side="left")
-    release_button = ttk.Button(update_buttons, text="배포 페이지 열기", command=open_release, state="disabled")
+    release_button = ttk.Button(update_buttons, text=tr("배포 페이지 열기"), command=open_release, state="disabled")
     release_button.pack(side="left", padx=8)
 
     def resize(event):
@@ -758,13 +858,30 @@ def run_gui(color="white"):
         ninja_help.configure(wraplength=max(240, event.width - 65))
         pet_help.configure(wraplength=max(240, event.width - 65))
         hellhound_help.configure(wraplength=max(240, event.width - 65))
+        silencer_help.configure(wraplength=max(240,event.width-65))
+        hotkey_label.configure(wraplength=max(240,event.width-65))
         canvas.configure(scrollregion=canvas.bbox("all"))
 
     panel.bind("<Configure>", resize)
     worker.start()
+    hotkey.start()
 
     def poll():
         nonlocal update_running, release_link
+        while True:
+            try:
+                event, _ = hotkey.events.get_nowait()
+            except queue.Empty:
+                break
+            if event == "toggle":
+                worker.toggle_all()
+            elif event == "ready":
+                hotkey_status.set(f"{HOTKEY_LABEL} · 전체 ON/OFF")
+            else:
+                hotkey_status.set("단축키 등록 실패 · 전체 ON/OFF 버튼을 사용하세요.")
+        enabled_count = sum(selection.is_set() for selection in worker.selections())
+        master_status.set(f"전체 ON · {enabled_count}/6" if enabled_count == 6 else
+                          f"일부 ON · {enabled_count}/6" if enabled_count else "전체 OFF · 0/6")
         for button in color_buttons:
             button.state(["disabled"] if worker.requested.is_set() or worker.controller.enabled else ["!disabled"])
         corpse_color_button.state(["disabled"] if worker.corpse_requested.is_set() else ["!disabled"])
@@ -782,6 +899,7 @@ def run_gui(color="white"):
             ninja_status.set(latest[5])
             pet_status.set(latest[6])
             hellhound_status.set(latest[7])
+            silencer_status.set(latest[8])
         try:
             result = update_results.get_nowait()
         except queue.Empty:
@@ -796,9 +914,10 @@ def run_gui(color="white"):
         root.after(100, poll)
 
     def closing():
+        hotkey.close()
         worker.close()
         status.set("모드 OFF · 종료 중")
-        if worker.is_alive():
+        if worker.is_alive() or hotkey.is_alive():
             root.after(50, closing)
         else:
             root.destroy()
@@ -1053,10 +1172,10 @@ def single_instance_self_test():
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="COTW 사냥감 윤곽 ON/OFF")
+    parser = argparse.ArgumentParser(description=tr("COTW 게임 모드"))
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--single-instance-self-test", action="store_true")
-    parser.add_argument("--color", choices=("blue", "white"), default="white", help="GUI의 초기 색상 선택")
+    parser.add_argument("--color", choices=("blue", "white"), default="white", help=tr("GUI의 초기 색상 선택"))
     arguments = parser.parse_args()
     if arguments.self_test:
         self_test()

@@ -1,0 +1,28 @@
+COTW Animal Outline v0.4.0
+
+Latest stable release:
+https://github.com/fullmetalsonic/cotw-animal-outline/releases/latest
+
+QUICK START
+1. Extract the ZIP and run COTWAnimalOutline.exe. Python is not required.
+2. Start the game and enter a single-player reserve.
+3. Turn on only the modes you want. All six start OFF.
+
+Supported: Windows 10/11 x64, Steam build 26051119 / code 3366163.
+The app finds the install path from the running game process; it does not edit
+game files, saves, or Steam launch options.
+
+MODES
+Live outline: white or blue, loaded animals only; no auto-spotting.
+Carcass outline: orange (#FF5900), loaded carcasses only.
+Ninja: AI hearing and local visual detection of player/ATV movement.
+Keep Dog Outline: preserve the game's native pet outline while clues are hidden.
+Hellhound: Retriever dog required; normal E-harvest, no automatic harvesting.
+Silencer: all weapons use longbow firing and bow impact audio, with the native
+longbow AI sound profile. No ballistics, damage, ammunition, or reload changes.
+Silencer in-game playback/listening is not yet verified.
+
+ALL ON/OFF are at the top. Ctrl+Shift+F10 toggles all modes; any ON turns all
+OFF, and all OFF turns all ON. No F1 shortcut. UI language follows the Windows
+display language: Korean for Korean, English otherwise (region is independent).
+See README.md and VALIDATION.md for details and limits.
