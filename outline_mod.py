@@ -13,6 +13,7 @@ import game_memory as probe
 from app_version import VERSION
 from ninja_mode import TransientNinjaState
 from pet_outline import TransientPetState
+from hellhound_mode import TransientHellhoundState
 from update_check import UpdateResult, check_update, is_release_url
 
 OUTLINE_OFFSET = 0x2468
@@ -108,6 +109,8 @@ class LiveBackend:
         self.ninja_writer = None
         self.pet_keeper = None
         self.pet_writer = None
+        self.hellhound_mode = None
+        self.hellhound_writer = None
 
     def set_color(self, color):
         if color not in PAYLOADS:
@@ -272,6 +275,25 @@ class LiveBackend:
         if self.pet_keeper:
             self.pet_keeper.disable()
 
+    def refresh_hellhound(self):
+        if self.hellhound_mode is None:
+            from hellhound_mode import HellhoundMode
+            self.check()
+            self.hellhound_writer = K.OpenProcess(0x438, False, self.game.pid)
+            if not self.hellhound_writer:
+                raise RuntimeError("헬하운드를 위한 게임 프로세스 접근 권한을 얻지 못했습니다")
+            try:
+                self.hellhound_mode = HellhoundMode(self.game, self.hellhound_writer)
+            except Exception:
+                K.CloseHandle(self.hellhound_writer)
+                self.hellhound_writer = None
+                raise
+        self.hellhound_mode.publish()
+
+    def stop_hellhound(self):
+        if self.hellhound_mode:
+            self.hellhound_mode.disable()
+
     def close(self):
         try:
             if self.corpse_renderer:
@@ -285,13 +307,17 @@ class LiveBackend:
                     if self.pet_keeper:
                         self.pet_keeper.close()
                 finally:
-                    for name in ("corpse_writer", "ninja_writer", "pet_writer"):
-                        handle = getattr(self, name)
-                        if handle:
-                            K.CloseHandle(handle)
-                            setattr(self, name, None)
-                    self.stop_writing()
-                    self.game.close()
+                    try:
+                        if self.hellhound_mode:
+                            self.hellhound_mode.close()
+                    finally:
+                        for name in ("corpse_writer", "ninja_writer", "pet_writer", "hellhound_writer"):
+                            handle = getattr(self, name)
+                            if handle:
+                                K.CloseHandle(handle)
+                                setattr(self, name, None)
+                        self.stop_writing()
+                        self.game.close()
 
 
 class RefreshController:
@@ -356,6 +382,7 @@ class ModWorker(threading.Thread):
         self.corpse_color = (1.0, 0.35, 0.0)
         self.ninja_requested = threading.Event()
         self.pet_requested = threading.Event()
+        self.hellhound_requested = threading.Event()
         self.stopping = threading.Event()
         self.messages = queue.Queue()
         self.controller = RefreshController()
@@ -369,6 +396,7 @@ class ModWorker(threading.Thread):
         self.corpse_off()
         self.ninja_off()
         self.pet_off()
+        self.hellhound_off()
         self.stopping.set()
 
     def ninja_off(self):
@@ -376,6 +404,9 @@ class ModWorker(threading.Thread):
 
     def pet_off(self):
         self.pet_requested.clear()
+
+    def hellhound_off(self):
+        self.hellhound_requested.clear()
 
     def corpse_off(self):
         self.corpse_requested.clear()
@@ -414,8 +445,11 @@ class ModWorker(threading.Thread):
                         backend.stop_ninja()
                     if not self.pet_requested.is_set():
                         backend.stop_pet()
+                    if not self.hellhound_requested.is_set():
+                        backend.stop_hellhound()
                     active = (self.requested.is_set() or self.corpse_requested.is_set()
-                              or self.ninja_requested.is_set() or self.pet_requested.is_set())
+                              or self.ninja_requested.is_set() or self.pet_requested.is_set()
+                              or self.hellhound_requested.is_set())
                     if active or time.monotonic() - last_poll >= 1:
                         rows, context, summary = backend.snapshot()
                         count = sum(backend.eligible(row) for row in rows)
@@ -456,6 +490,16 @@ class ModWorker(threading.Thread):
                             if not self.pet_requested.is_set():
                                 backend.stop_pet()
                                 pet_state = "반려견 윤곽 OFF"
+                        hellhound_state = "헬하운드 OFF"
+                        if self.hellhound_requested.is_set():
+                            hellhound_state = "헬하운드 ON"
+                            try:
+                                backend.refresh_hellhound()
+                            except TransientHellhoundState:
+                                hellhound_state = "헬하운드 ON · 연결 대기"
+                            if not self.hellhound_requested.is_set():
+                                backend.stop_hellhound()
+                                hellhound_state = "헬하운드 OFF"
                         if active:
                             last_error = None
                         live_on = self.requested.is_set() and self.controller.enabled
@@ -463,17 +507,19 @@ class ModWorker(threading.Thread):
                                   else last_error or "살아 있는 사냥감의 윤곽 갱신이 중지되었습니다.")
                         self.messages.put(("모드 ON" if live_on else "연결됨 · 모드 OFF", count, detail,
                                            "사체 ON" if self.corpse_requested.is_set() else "사체 OFF", corpse_count,
-                                           ninja_state, pet_state))
+                                           ninja_state, pet_state, hellhound_state))
                         last_poll = time.monotonic()
                 except Exception as error:
                     was_on = (self.requested.is_set() or self.controller.enabled or self.corpse_requested.is_set()
-                              or self.ninja_requested.is_set() or self.pet_requested.is_set())
+                              or self.ninja_requested.is_set() or self.pet_requested.is_set()
+                              or self.hellhound_requested.is_set())
                     if was_on:
                         last_error = str(error)
                     self.off()
                     self.corpse_off()
                     self.ninja_off()
                     self.pet_off()
+                    self.hellhound_off()
                     if backend:
                         try:
                             backend.close()
@@ -483,7 +529,7 @@ class ModWorker(threading.Thread):
                             pass
                         finally:
                             backend = None
-                    self.messages.put(("오류 · 모드 OFF" if was_on else "게임 연결 대기 · 모드 OFF", 0, str(error), "사체 OFF", 0, "닌자 OFF", "반려견 윤곽 OFF"))
+                    self.messages.put(("오류 · 모드 OFF" if was_on else "게임 연결 대기 · 모드 OFF", 0, str(error), "사체 OFF", 0, "닌자 OFF", "반려견 윤곽 OFF", "헬하운드 OFF"))
                     self.stopping.wait(1)
                 self.stopping.wait(INTERVAL)
         finally:
@@ -649,6 +695,22 @@ def run_gui(color="white"):
     ttk.Button(pet_buttons, text="반려견 윤곽 OFF", command=pet_off).pack(side="left", fill="x", expand=True)
     pet_help = ttk.Label(pet_panel, text="전체 동물 흔적 숨김을 유지하면서 반려견 윤곽만 표시합니다. 게임의 사냥개 윤곽 켜기·색상과 원래 가림 판정을 따릅니다. 닌자 효과는 반려견에도 유지됩니다.", wraplength=440)
     pet_help.pack(anchor="w", fill="x")
+
+    hellhound_panel = ttk.LabelFrame(panel, text="헬하운드 모드 · 독립 ON/OFF", padding=10)
+    hellhound_panel.pack(fill="x", pady=(0, 10))
+    hellhound_status = tk.StringVar(value="헬하운드 OFF")
+    ttk.Label(hellhound_panel, textvariable=hellhound_status).pack(anchor="w", pady=(0, 7))
+    hellhound_buttons = ttk.Frame(hellhound_panel)
+    hellhound_buttons.pack(fill="x", pady=(0, 8))
+
+    def hellhound_off():
+        worker.hellhound_off()
+        hellhound_status.set("헬하운드 OFF")
+
+    ttk.Button(hellhound_buttons, text="헬하운드 ON", command=worker.hellhound_requested.set).pack(side="left", fill="x", expand=True, padx=(0, 6))
+    ttk.Button(hellhound_buttons, text="헬하운드 OFF", command=hellhound_off).pack(side="left", fill="x", expand=True)
+    hellhound_help = ttk.Label(hellhound_panel, text="리트리버가 1~9등급 사체를 회수하도록 허용합니다. 원래 거리·상태 조건은 유지합니다. 큰 사체는 픽업 성공 시 플레이어 약 3m 앞에 옮깁니다. 사체를 E로 정상 수확할 수 있으며 실제 등급·무게는 바꾸지 않습니다. 리트리버 DLC와 활성 반려견이 필요합니다.", wraplength=440)
+    hellhound_help.pack(anchor="w", fill="x")
     updates_panel = ttk.LabelFrame(panel, text="업데이트", padding=9)
     updates_panel.pack(fill="x", pady=(3, 0))
     versions = tk.StringVar(value=f"현재 {VERSION} / 최신 확인 중")
@@ -695,6 +757,7 @@ def run_gui(color="white"):
         corpse_help.configure(wraplength=max(240, event.width - 65))
         ninja_help.configure(wraplength=max(240, event.width - 65))
         pet_help.configure(wraplength=max(240, event.width - 65))
+        hellhound_help.configure(wraplength=max(240, event.width - 65))
         canvas.configure(scrollregion=canvas.bbox("all"))
 
     panel.bind("<Configure>", resize)
@@ -718,6 +781,7 @@ def run_gui(color="white"):
             corpse_status.set(f"{latest[3]} · 대상 {latest[4]}마리")
             ninja_status.set(latest[5])
             pet_status.set(latest[6])
+            hellhound_status.set(latest[7])
         try:
             result = update_results.get_nowait()
         except queue.Empty:

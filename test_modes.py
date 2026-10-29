@@ -72,12 +72,12 @@ class ModeTests(unittest.TestCase):
         backend.refresh_ninja.side_effect = [mod.TransientNinjaState("vehicle rebinding"), None]
         worker = mod.ModWorker()
         worker.stopping = OneIteration(limit=2)
-        for selection in (worker.requested, worker.corpse_requested, worker.ninja_requested, worker.pet_requested):
+        for selection in (worker.requested, worker.corpse_requested, worker.ninja_requested, worker.pet_requested, worker.hellhound_requested):
             selection.set()
         with patch.object(mod, "LiveBackend", return_value=backend):
             worker.run()
         self.assertTrue(all(e.is_set() for e in
-                            (worker.requested, worker.corpse_requested, worker.ninja_requested, worker.pet_requested)))
+                            (worker.requested, worker.corpse_requested, worker.ninja_requested, worker.pet_requested, worker.hellhound_requested)))
         self.assertEqual(backend.write.call_count, 2)
         self.assertEqual(backend.refresh_corpses.call_count, 2)
         self.assertEqual(backend.refresh_ninja.call_count, 2)
@@ -93,12 +93,12 @@ class ModeTests(unittest.TestCase):
         backend.refresh_pet.side_effect = [mod.TransientPetState("pet respawning"), None]
         worker = mod.ModWorker()
         worker.stopping = OneIteration(limit=2)
-        for selection in (worker.requested, worker.corpse_requested, worker.ninja_requested, worker.pet_requested):
+        for selection in (worker.requested, worker.corpse_requested, worker.ninja_requested, worker.pet_requested, worker.hellhound_requested):
             selection.set()
         with patch.object(mod, "LiveBackend", return_value=backend):
             worker.run()
         self.assertTrue(all(e.is_set() for e in
-                            (worker.requested, worker.corpse_requested, worker.ninja_requested, worker.pet_requested)))
+                            (worker.requested, worker.corpse_requested, worker.ninja_requested, worker.pet_requested, worker.hellhound_requested)))
         self.assertEqual(backend.write.call_count, 2)
         self.assertEqual(backend.refresh_corpses.call_count, 2)
         self.assertEqual(backend.refresh_ninja.call_count, 2)
@@ -110,6 +110,43 @@ class ModeTests(unittest.TestCase):
         self.assertEqual(waiting[6], "반려견 윤곽 ON · 연결 대기")
         self.assertEqual(recovered[6], "반려견 윤곽 ON")
 
+    def test_hellhound_transition_keeps_five_selections_and_recovers(self):
+        backend = self.worker_backend()
+        backend.refresh_hellhound.side_effect = [mod.TransientHellhoundState("retriever rebinding"), None]
+        worker = mod.ModWorker()
+        worker.stopping = OneIteration(limit=2)
+        selections = (worker.requested, worker.corpse_requested, worker.ninja_requested,
+                      worker.pet_requested, worker.hellhound_requested)
+        self.assertFalse(any(e.is_set() for e in selections))
+        for selection in selections:
+            selection.set()
+        with patch.object(mod, "LiveBackend", return_value=backend):
+            worker.run()
+        self.assertTrue(all(e.is_set() for e in selections))
+        for method in (backend.write, backend.refresh_corpses, backend.refresh_ninja,
+                       backend.refresh_pet, backend.refresh_hellhound):
+            self.assertEqual(method.call_count, 2)
+        waiting, recovered = worker.messages.get_nowait(), worker.messages.get_nowait()
+        self.assertEqual(len(waiting), 8)
+        self.assertEqual(waiting[7], "헬하운드 ON · 연결 대기")
+        self.assertEqual(recovered[7], "헬하운드 ON")
+        self.assertEqual(waiting[5:7], ("닌자 ON", "반려견 윤곽 ON"))
+
+    def test_hellhound_fatal_error_does_not_become_transition_waiting(self):
+        backend = self.worker_backend()
+        backend.refresh_hellhound.side_effect = OSError("failed native write")
+        worker = mod.ModWorker()
+        worker.stopping = OneIteration()
+        selections = (worker.requested, worker.corpse_requested, worker.ninja_requested,
+                      worker.pet_requested, worker.hellhound_requested)
+        for selection in selections:
+            selection.set()
+        with patch.object(mod, "LiveBackend", return_value=backend):
+            worker.run()
+        self.assertFalse(any(e.is_set() for e in selections))
+        self.assertEqual(worker.messages.get_nowait()[7], "헬하운드 OFF")
+        backend.close.assert_called_once()
+
     def test_all_backends_close_even_when_an_earlier_keeper_fails(self):
         backend = mod.LiveBackend.__new__(mod.LiveBackend)
         backend.writer = 99
@@ -117,27 +154,29 @@ class ModeTests(unittest.TestCase):
         backend.corpse_renderer = Mock()
         backend.ninja_mode = Mock()
         backend.pet_keeper = Mock()
+        backend.hellhound_mode = Mock()
         backend.corpse_renderer.close.side_effect = OSError("lease disconnected")
-        backend.corpse_writer, backend.ninja_writer, backend.pet_writer = 11, 12, 13
+        backend.corpse_writer, backend.ninja_writer, backend.pet_writer, backend.hellhound_writer = 11, 12, 13, 14
         with patch.object(mod.K, "CloseHandle", return_value=True) as close:
             with self.assertRaises(OSError):
                 backend.close()
         backend.ninja_mode.close.assert_called_once()
         backend.pet_keeper.close.assert_called_once()
+        backend.hellhound_mode.close.assert_called_once()
         backend.game.close.assert_called_once()
-        self.assertEqual(sorted(c.args[0] for c in close.call_args_list), [11, 12, 13, 99])
+        self.assertEqual(sorted(c.args[0] for c in close.call_args_list), [11, 12, 13, 14, 99])
 
     def test_unverified_ninja_failure_still_turns_modes_off(self):
         backend = self.worker_backend()
         backend.refresh_ninja.side_effect = RuntimeError("foreign patch")
         worker = mod.ModWorker()
         worker.stopping = OneIteration()
-        for selection in (worker.requested, worker.corpse_requested, worker.ninja_requested, worker.pet_requested):
+        for selection in (worker.requested, worker.corpse_requested, worker.ninja_requested, worker.pet_requested, worker.hellhound_requested):
             selection.set()
         with patch.object(mod, "LiveBackend", return_value=backend):
             worker.run()
         self.assertFalse(any(e.is_set() for e in
-                             (worker.requested, worker.corpse_requested, worker.ninja_requested, worker.pet_requested)))
+                             (worker.requested, worker.corpse_requested, worker.ninja_requested, worker.pet_requested, worker.hellhound_requested)))
         self.assertEqual(worker.messages.get_nowait()[5], "닌자 OFF")
 
     def test_live_and_dead_routes_are_disjoint_and_exclude_pets(self):
@@ -173,6 +212,7 @@ class ModeTests(unittest.TestCase):
         worker.corpse_requested.set()
         worker.ninja_requested.set()
         worker.pet_requested.set()
+        worker.hellhound_requested.set()
         worker.set_corpse_color((1, 0, 0.5))
         self.assertTrue(worker.requested.is_set())
         self.assertTrue(worker.controller.enabled)
@@ -196,12 +236,19 @@ class ModeTests(unittest.TestCase):
         self.assertTrue(worker.corpse_requested.is_set())
         self.assertFalse(worker.pet_requested.is_set())
         worker.pet_requested.set()
+        worker.hellhound_off()
+        self.assertTrue(worker.requested.is_set())
+        self.assertTrue(worker.corpse_requested.is_set())
+        self.assertTrue(worker.pet_requested.is_set())
+        self.assertFalse(worker.hellhound_requested.is_set())
+        worker.hellhound_requested.set()
         worker.ninja_requested.set()
         worker.close()
         self.assertFalse(worker.requested.is_set())
         self.assertFalse(worker.corpse_requested.is_set())
         self.assertFalse(worker.ninja_requested.is_set())
         self.assertFalse(worker.pet_requested.is_set())
+        self.assertFalse(worker.hellhound_requested.is_set())
 
     def test_invalid_corpse_color_keeps_existing_selection(self):
         worker = mod.ModWorker()
@@ -213,10 +260,10 @@ class ModeTests(unittest.TestCase):
 
     def test_worker_routes_each_mode_without_cross_writes(self):
         real_backend = mod.LiveBackend
-        combinations = [(live, corpse, ninja, pet) for live in (False, True) for corpse in (False, True)
-                        for ninja in (False, True) for pet in (False, True)]
-        for live_on, corpse_on, ninja_on, pet_on in combinations:
-            with self.subTest(live=live_on, corpse=corpse_on, ninja=ninja_on, pet=pet_on):
+        combinations = [(live, corpse, ninja, pet, hellhound) for live in (False, True) for corpse in (False, True)
+                        for ninja in (False, True) for pet in (False, True) for hellhound in (False, True)]
+        for live_on, corpse_on, ninja_on, pet_on, hellhound_on in combinations:
+            with self.subTest(live=live_on, corpse=corpse_on, ninja=ninja_on, pet=pet_on, hellhound=hellhound_on):
                 created = []
 
                 class Backend:
@@ -229,6 +276,7 @@ class ModeTests(unittest.TestCase):
                         self.live_writes, self.corpse_writes = [], []
                         self.ninja_updates = 0
                         self.pet_updates = 0
+                        self.hellhound_updates = 0
                         self.closed = False
                         created.append(self)
 
@@ -236,6 +284,7 @@ class ModeTests(unittest.TestCase):
                     def stop_corpses(self): pass
                     def stop_ninja(self): pass
                     def stop_pet(self): pass
+                    def stop_hellhound(self): pass
                     def validate(self, target, context): pass
                     def start_writing(self): self.writer = 1
                     def stop_writing(self): self.writer = None
@@ -247,6 +296,9 @@ class ModeTests(unittest.TestCase):
 
                     def refresh_pet(self):
                         self.pet_updates += 1
+
+                    def refresh_hellhound(self):
+                        self.hellhound_updates += 1
 
                     def snapshot(self):
                         targets = [row(), row(0), row(0, "bloodhound")]
@@ -269,6 +321,8 @@ class ModeTests(unittest.TestCase):
                     worker.ninja_requested.set()
                 if pet_on:
                     worker.pet_requested.set()
+                if hellhound_on:
+                    worker.hellhound_requested.set()
                 with patch.object(mod, "LiveBackend", Backend):
                     worker.run()
                 self.assertEqual(len(created), 1)
@@ -277,6 +331,7 @@ class ModeTests(unittest.TestCase):
                 self.assertEqual(len(backend.corpse_writes), int(corpse_on))
                 self.assertEqual(backend.ninja_updates, int(ninja_on))
                 self.assertEqual(backend.pet_updates, int(pet_on))
+                self.assertEqual(backend.hellhound_updates, int(hellhound_on))
                 self.assertTrue(backend.closed)
 
 
