@@ -758,7 +758,7 @@ def run_gui(color="white"):
 
     ttk.Button(ninja_buttons, text=tr("닌자 ON"), command=ninja_on).pack(side="left", fill="x", expand=True, padx=(0, 6))
     ttk.Button(ninja_buttons, text=tr("닌자 OFF"), command=ninja_off).pack(side="left", fill="x", expand=True)
-    ninja_help = ttk.Label(ninja_panel, text=tr("이동·탈것 소음과 플레이어의 모습에 대한 AI 감지를 차단합니다. 효과음과 게임 소음 게이지는 유지되며, 냄새·발포 감지는 그대로입니다. 승하차 같은 상태 전환에는 잠시 대기 후 자동으로 다시 적용합니다."),
+    ninja_help = ttk.Label(ninja_panel, text=tr("이동·탈것 소음과 플레이어의 모습·냄새에 대한 AI 감지를 차단합니다. 효과음과 게임 소음 게이지는 유지되며, 발포 감지는 별도입니다. 승하차 같은 상태 전환에는 잠시 대기 후 자동으로 다시 적용합니다."),
                           wraplength=440)
     ninja_help.pack(anchor="w", fill="x")
 

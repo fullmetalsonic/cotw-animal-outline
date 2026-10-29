@@ -1,4 +1,4 @@
-COTW Animal Outline v0.4.0
+COTW Animal Outline v0.4.1 — stable release
 
 Latest stable release:
 https://github.com/fullmetalsonic/cotw-animal-outline/releases/latest
@@ -15,7 +15,9 @@ game files, saves, or Steam launch options.
 MODES
 Live outline: white or blue, loaded animals only; no auto-spotting.
 Carcass outline: orange (#FF5900), loaded carcasses only.
-Ninja: AI hearing and local visual detection of player/ATV movement.
+Ninja: blocks AI hearing/vision of player/ATV movement and player scent detection.
+OFF restores native calculations. Scent-eliminator supplies/timers and wind stay
+unchanged. The new scent filter has not been verified in the running game.
 Keep Dog Outline: preserve the game's native pet outline while clues are hidden.
 Hellhound: Retriever dog required; normal E-harvest, no automatic harvesting.
 Silencer: all weapons use longbow firing and bow impact audio, with the native

@@ -1,6 +1,8 @@
 """Game-free fake API and execution tests for the real assembled ninja stub."""
 from contextlib import contextmanager
 import hashlib
+import itertools
+import json
 from pathlib import Path
 import struct
 import types
@@ -18,6 +20,7 @@ class FakeAPI:
             self.put(self.base+rva, data)
         self.put(self.base+m.CALL_RVA, m.ORIGINAL_CALL)
         self.put(self.base+m.VISION_CALL_RVA, m.VISION_ORIGINAL_CALL)
+        self.put(self.base+m.SCENT_CALL_RVA, m.SCENT_ORIGINAL_CALL)
 
     def put(self, address, data):
         self.memory.update((address+i, byte) for i, byte in enumerate(data))
@@ -35,10 +38,14 @@ class FakeAPI:
             self.failure = None; self.put(address, data[:2]); raise OSError("partial patch")
         if address == self.base+m.VISION_CALL_RVA and data != m.VISION_ORIGINAL_CALL and self.failure == "vision_partial":
             self.failure = None; self.put(address, data[:2]); raise OSError("partial visual patch")
+        if address == self.base+m.SCENT_CALL_RVA and data != m.SCENT_ORIGINAL_CALL and self.failure == "scent_partial":
+            self.failure = None; self.put(address, data[:2]); raise OSError("partial scent patch")
         if address == self.allocation+m.CODE_SIZE+72 and self.failure == "publish":
             self.failure = None; self.put(address, data[:8]); raise OSError("partial lease")
         if address == self.allocation+0x40000+m.CODE_SIZE+72 and self.failure == "vision_publish":
             self.failure = None; self.put(address, data[:8]); raise OSError("partial visual lease")
+        if address == self.allocation+0x80000+m.CODE_SIZE+72 and self.failure == "scent_publish":
+            self.failure = None; self.put(address, data[:8]); raise OSError("partial scent lease")
         self.put(address, data)
 
     def protect(self, address, size, protection):
@@ -50,6 +57,8 @@ class FakeAPI:
             self.failure = None; raise OSError("cache flush")
         if address == self.base+m.VISION_CALL_RVA and self.failure == "vision_flush":
             self.failure = None; raise OSError("visual cache flush")
+        if address == self.base+m.SCENT_CALL_RVA and self.failure == "scent_flush":
+            self.failure = None; raise OSError("scent cache flush")
 
     def allocate_near(self, site):
         allocation = self.allocation+sum(e[0] == "allocate" for e in self.events)*0x40000
@@ -69,6 +78,8 @@ class FakeAPI:
                 raise OSError("thread context")
             if self.failure == "vision_context" and site == self.base+m.VISION_CALL_RVA:
                 raise OSError("visual thread context")
+            if self.failure == "scent_context" and site == self.base+m.SCENT_CALL_RVA:
+                raise OSError("scent thread context")
             yield
         finally:
             self.events.append(("resume",))
@@ -143,8 +154,9 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(self.api.read(header+72, 56), bytes(56))
         other = m.NinjaMode(self.game, 1, api=self.api)
         self.assertEqual(other.publish(), 1)
-        self.assertEqual(sum(e[0] == "allocate" for e in self.api.events), 2)
+        self.assertEqual(sum(e[0] == "allocate" for e in self.api.events), 3)
         self.assertEqual(other.vision_allocation, self.mode.vision_allocation)
+        self.assertEqual(other.scent_allocation, self.mode.scent_allocation)
 
     def test_fail_closed_after_world_generation_or_player_rebinding(self):
         self.mode.publish()
@@ -193,6 +205,7 @@ class PublishTests(unittest.TestCase):
         self.mode.close(); self.mode.close()
         self.assertIsNone(self.mode.allocation)
         self.assertIsNone(self.mode.vision_allocation)
+        self.assertIsNone(self.mode.scent_allocation)
 
     def test_foreign_code_binary_and_owned_metadata_rejected(self):
         self.api.put(self.mode.site, b"\x90"*5)
@@ -223,9 +236,9 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(other.allocation, self.mode.allocation)
         self.assertNotEqual(other.vision_allocation, other.allocation)
         self.assertEqual(self.api.read(other.allocation, m.CODE_SIZE), original_code)
-        self.assertEqual(sum(e[0] == "allocate" for e in self.api.events), 2)
+        self.assertEqual(sum(e[0] == "allocate" for e in self.api.events), 3)
         other.disable()
-        for allocation in (other.allocation, other.vision_allocation):
+        for allocation in (other.allocation, other.vision_allocation, other.scent_allocation):
             self.assertEqual(self.api.read(allocation+m.CODE_SIZE+72, 8), bytes(8))
 
     def test_visual_install_or_publish_failure_disables_both_leases(self):
@@ -244,6 +257,48 @@ class PublishTests(unittest.TestCase):
                 self.assertEqual(sum(e[0] == "suspend" for e in api.events),
                                  sum(e[0] == "resume" for e in api.events))
 
+    def test_scent_install_publish_and_disable_errors_expire_all_three_leases(self):
+        for failure in ("scent_partial", "scent_flush", "scent_context", "scent_publish"):
+            with self.subTest(failure=failure):
+                api = FakeAPI(); game, _, _ = fixture(api)
+                mode = m.NinjaMode(game, 1, api=api); api.failure = failure
+                with self.assertRaises((RuntimeError, OSError)):
+                    mode.publish()
+                for allocation in (mode.allocation, mode.vision_allocation, mode.scent_allocation):
+                    if allocation is not None:
+                        self.assertEqual(api.read(allocation+m.CODE_SIZE+72, 8), bytes(8))
+                if mode.scent_allocation is None:
+                    self.assertEqual(api.read(mode.scent_site, 5), m.SCENT_ORIGINAL_CALL)
+                self.assertEqual(sum(e[0] == "suspend" for e in api.events),
+                                 sum(e[0] == "resume" for e in api.events))
+        self.mode.publish(); self.api.failure = "scent_publish"
+        with self.assertRaises(OSError):self.mode.disable()
+        for allocation in (self.mode.allocation, self.mode.vision_allocation, self.mode.scent_allocation):
+            self.assertEqual(self.api.read(allocation+m.CODE_SIZE+72, 8), bytes(8))
+
+    def test_scent_foreign_tamper_version_and_old_two_pages_reuse(self):
+        self.mode._install(); self.mode._install(vision=True)
+        old = [self.api.read(a, m.CODE_SIZE+256) for a in
+               (self.mode.allocation, self.mode.vision_allocation)]
+        fresh = m.NinjaMode(self.game, 1, api=self.api); fresh.publish(); fresh.disable()
+        self.assertEqual(fresh.allocation, self.mode.allocation)
+        self.assertEqual(fresh.vision_allocation, self.mode.vision_allocation)
+        for previous, allocation in zip(old, (fresh.allocation, fresh.vision_allocation)):
+            actual = self.api.read(allocation, m.CODE_SIZE+256)
+            self.assertEqual(actual[:m.CODE_SIZE+64], previous[:m.CODE_SIZE+64])
+            self.assertEqual(actual[m.CODE_SIZE+128:], previous[m.CODE_SIZE+128:])
+        self.assertEqual(sum(e[0] == "allocate" for e in self.api.events), 3)
+        for location in (fresh.scent_site, fresh.scent_allocation, fresh.scent_allocation+m.CODE_SIZE):
+            original = self.api.read(location, 1); self.api.put(location, b"X")
+            with self.assertRaises(RuntimeError):fresh.publish()
+            for allocation in (fresh.allocation, fresh.vision_allocation, fresh.scent_allocation):
+                self.assertEqual(self.api.read(allocation+m.CODE_SIZE+72, 8), bytes(8))
+            self.api.put(location, original)
+        for rva in (m.SCENT_ORIGINAL_RVA, 0x612C57, 0x612C80):
+            api = FakeAPI(); game, _, _ = fixture(api); api.put(api.base+rva, b"X")
+            with self.assertRaises(RuntimeError):m.NinjaMode(game, 1, api=api).publish()
+            self.assertFalse(any(e[0] == "allocate" for e in api.events))
+
     def test_dismounted_vehicle_clears_header_and_foreign_patch_is_rejected(self):
         api = FakeAPI(); game, binding, extra = fixture(api, mounted=True)
         mode = m.NinjaMode(game, 1, api=api)
@@ -251,7 +306,7 @@ class PublishTests(unittest.TestCase):
         put_u32(api, extra["vehicle_source"]+0x54, 0)
         self.assertEqual(mode.publish(), 1)  # Dismounted, stale ID/audio hints.
         self.assertIsNone(mode.last_vehicle_binding)
-        for allocation in (mode.allocation, mode.vision_allocation):
+        for allocation in (mode.allocation, mode.vision_allocation, mode.scent_allocation):
             self.assertEqual(struct.unpack("<Q", api.read(allocation+m.CODE_SIZE+72, 8))[0], 1300)
         self.assertEqual(api.read(mode.vision_allocation+m.CODE_SIZE+256, 32), bytes(32))
         fresh = FakeAPI(); game, _, _ = fixture(fresh)
@@ -284,7 +339,7 @@ class PublishTests(unittest.TestCase):
         put_u32(api, binding["mapping"]+16, (8 << 16)|0x5679)
         with self.assertRaises(m.TransientNinjaState):
             mode.publish()
-        for allocation in (mode.allocation, mode.vision_allocation):
+        for allocation in (mode.allocation, mode.vision_allocation, mode.scent_allocation):
             self.assertEqual(api.read(allocation+m.CODE_SIZE+72, 8), bytes(8))
         self.assertIsNone(mode.last_binding)
         put_u32(api, binding["mapping"]+16, (8 << 16)|0x5678)
@@ -299,7 +354,7 @@ class PublishTests(unittest.TestCase):
         with patch.object(api, "read", side_effect=change_driver):
             with self.assertRaises(m.TransientNinjaState):
                 mode.publish()
-        for allocation in (mode.allocation, mode.vision_allocation):
+        for allocation in (mode.allocation, mode.vision_allocation, mode.scent_allocation):
             self.assertEqual(api.read(allocation+m.CODE_SIZE+72, 8), bytes(8))
         self.assertEqual(mode.publish(), 1)
         self.assertIsNone(mode.last_vehicle_binding)
@@ -318,7 +373,7 @@ class PublishTests(unittest.TestCase):
                 original = self.api.read(address, len(data)); self.api.put(address, data)
                 with self.assertRaises(m.TransientNinjaState):
                     self.mode.publish()
-                for allocation in (self.mode.allocation, self.mode.vision_allocation):
+                for allocation in (self.mode.allocation, self.mode.vision_allocation, self.mode.scent_allocation):
                     self.assertEqual(self.api.read(allocation+m.CODE_SIZE+72, 8), bytes(8))
                 self.api.put(address, original)
                 self.assertEqual(self.mode.publish(), 1)
@@ -492,7 +547,8 @@ class MachineTests(unittest.TestCase):
         code = Path(m.__file__).with_name("ninja_stub.bin").read_bytes()
         self.assertEqual(len(code), m.BUNDLE_SIZE)
         self.assertEqual(hashlib.sha256(code[:m.CODE_SIZE]).hexdigest(), m.STUB_SHA256)
-        self.assertEqual(hashlib.sha256(code[m.CODE_SIZE:]).hexdigest(), m.VISION_STUB_SHA256)
+        self.assertEqual(hashlib.sha256(code[m.CODE_SIZE:m.CODE_SIZE*2]).hexdigest(), m.VISION_STUB_SHA256)
+        self.assertEqual(hashlib.sha256(code[m.CODE_SIZE*2:]).hexdigest(), m.SCENT_STUB_SHA256)
         instructions = list(Cs(CS_ARCH_X86, CS_MODE_64).disasm(code[:m.CODE_SIZE].rstrip(b"\0"), 0))
         self.assertEqual(instructions[0].mnemonic, "sub")
         self.assertEqual(instructions[1].mnemonic, "call")
@@ -646,6 +702,184 @@ class VisionMachineTests(unittest.TestCase):
                 state, stats = self.execute(target=target, condition=condition, active=active)
                 self.assertEqual(state["score"], 3.75)
                 self.assertEqual(stats[1:4], (0, 0, 1))
+
+
+class ScentMachineTests(unittest.TestCase):
+    fixture_data = json.loads(Path(__file__).with_name("ninja_scent_fixture.json").read_text(encoding="utf8"))
+
+    def execute(self, *, active=True, condition=None, target="player", receiver="wildlife",
+                native=False, score=.75, posture=0, distance=10., wind=5., angle=0., eliminator=False):
+        from unicorn import Uc, UC_ARCH_X86, UC_MODE_64, UC_HOOK_CODE, UC_HOOK_MEM_WRITE
+        from unicorn import x86_const as x
+        api = FakeAPI(); game, binding, extra = fixture(api, mounted=True)
+        mode = m.NinjaMode(game, 1, api=api)
+        uc = Uc(UC_ARCH_X86, UC_MODE_64)
+        uc.mem_map(api.base, 0x3000000); uc.mem_map(api.allocation, m.ALLOCATION_SIZE)
+        uc.mem_map(0x200000000, 0x40000); uc.mem_map(0x300000000, 0x10000)
+        for address, byte in api.memory.items():uc.mem_write(address, bytes([byte]))
+        uc.mem_write(api.allocation, mode.scent_code)
+        header = api.allocation+m.CODE_SIZE
+        uc.mem_write(header, mode._header(scent=True))
+        uc.mem_write(header+64, struct.pack("<Q", 2))
+        uc.mem_write(header+72, struct.pack("<7Q", 1300 if active else 0,
+                     *(binding[k] for k in ("character", "source", "handle", "pool", "player", "mapping"))))
+        source = binding["source"] if target == "player" else extra["nodes"]+9*0x180
+        host, observer, xyz, node, bucket, weather = [0x200030000+i*0x1000 for i in range(6)]
+        uc.mem_write(host+0x20, struct.pack("<Q", host+0x800))
+        uc.mem_write(host+0x30, struct.pack("<Q", bucket))
+        uc.mem_write(bucket, struct.pack("<2Q", node, node)); uc.mem_write(node+0x10, struct.pack("<I", 42))
+        for n, profile in enumerate(self.fixture_data['profiles']):
+            uc.mem_write(node+0x174+n*40, struct.pack("<10f", *profile))
+        uc.mem_write(xyz, struct.pack("<3f", distance, 0, 0))
+        uc.mem_write(source+0xCC, bytes([min(posture, 2)]))
+        uc.mem_write(source+0xD4, bytes([2 if posture == 3 else 0]))
+        uc.mem_write(source+0xDC, struct.pack("<f", .5)); uc.mem_write(source+0xEC, struct.pack("<f", 1.))
+        uc.mem_write(source+0x118, struct.pack("<Q", int(eliminator)))
+        if eliminator:
+            for offset in (0x12C, 0x140, 0x154):uc.mem_write(source+offset, struct.pack("<f", 1.))
+        # Receiver identity never scopes filtering; a pet AI uses the same local source rule.
+        uc.mem_write(observer+0xB8, struct.pack("<Q", 0xCA7100 if receiver == "pet" else 0xDEEA00))
+        uc.mem_write(source+0x170, struct.pack("<I", 1 if target == "player" else 3))
+        qpc, original, continuation = api.base+0x1000, api.base+m.SCENT_ORIGINAL_RVA, api.base+m.SCENT_CALL_RVA+5
+        uc.mem_write(api.base+m.QPC_IAT_RVA, struct.pack("<Q", qpc)); uc.mem_write(qpc, b"\xc3")
+        for rva, data in self.fixture_data['rip_data'].items():uc.mem_write(api.base+int(rva, 16), bytes.fromhex(data))
+        for rva in (0x27C23D8, 0x27C5DB8):uc.mem_write(api.base+rva, struct.pack("<Q", weather))
+        uc.mem_write(original, bytes.fromhex(self.fixture_data['original_hex']) if native else b"\xc3")
+        uc.mem_write(continuation, bytes.fromhex(self.fixture_data['consumer_hex']))
+        dependencies = {0x679550: ("rax", 0), 0x2CDB10: ("rax", weather), 0x2FC210: ("float", 10.),
+                        0x5F4E60: ("float", 1.), 0x5F3D60: ("float", 1.), 0x5F11D0: ("float", 1.),
+                        0xA85720: ("rax", 0), 0xA839C0: ("float", 0.)}
+        for rva in dependencies:uc.mem_write(api.base+rva, b"\xc3")
+        caller_sp = 0x300008000
+        uc.mem_write(caller_sp-8, struct.pack("<Q", continuation))
+        uc.mem_write(caller_sp+0x20, struct.pack("<3Q", xyz, observer, source))
+        uc.reg_write(x.UC_X86_REG_RSP, caller_sp-8)
+        registers = ("RAX", "RCX", "RDX", "R8", "R9", "R10", "R11", "RBX", "RBP", "RSI", "RDI", "R12", "R13", "R14", "R15")
+        for n, name in enumerate(registers):uc.reg_write(getattr(x, 'UC_X86_REG_'+name), 0xABC000+n)
+        for name, value in dict(RCX=host, RDX=42, RBX=source).items():uc.reg_write(getattr(x, 'UC_X86_REG_'+name), value)
+        bits = lambda value: struct.unpack("<I", struct.pack("<f", value))[0]
+        for n in range(16):uc.reg_write(getattr(x, 'UC_X86_REG_XMM'+str(n)), (0x123456789ABCDEF << 32)+n)
+        for n, value in ((2, wind), (3, angle), (7, 0.), (8, 1.), (9, 1.5)):
+            old = uc.reg_read(getattr(x, 'UC_X86_REG_XMM'+str(n)))
+            uc.reg_write(getattr(x, 'UC_X86_REG_XMM'+str(n)), (old & ~0xFFFFFFFF)|bits(value))
+        uc.reg_write(x.UC_X86_REG_EFLAGS, 0x246)
+        def snapshot():
+            return ([uc.reg_read(getattr(x, 'UC_X86_REG_'+n)) for n in registers],
+                    [uc.reg_read(getattr(x, 'UC_X86_REG_XMM'+str(n))) for n in range(16)],
+                    uc.reg_read(x.UC_X86_REG_EFLAGS))
+        inputs = snapshot(); caller_bytes = bytes(uc.mem_read(caller_sp, 64))
+        mutations = {
+            "expired": (header+72, struct.pack("<Q", 1000)), "odd": (header+64, struct.pack("<Q", 3)),
+            "world": (extra['world']+0x48, bytes(4)), "world_inactive": (extra['world']+0x7C, bytes(1)),
+            "owner": (binding['source']+0xB8, bytes(8)), "type": (binding['source']+0x170, struct.pack('<I', 2)),
+            "inactive": (binding['source']+0x17C, bytes(1)), "character_vtable": (binding['character'], bytes(8)),
+            "generation": (binding['mapping']+12, struct.pack('<I', (7 << 16)|0x1235)),
+            "slot": (binding['mapping']+12, struct.pack('<I', (8 << 16)|0x1234)),
+            "source_index": (binding['source']+0x174, bytes(2)), "handle": (binding['character']+0x2098, bytes(4)),
+            "local_manager": (api.base+m.LOCAL_RVA, bytes(8)), "local_slot": (extra['local_manager']+0x60, bytes(8)),
+            "player_rebinding": (extra['local_slot']+0x170, bytes(8)), "player_link": (binding['character']+0x2400, bytes(8)),
+            "player_backlink": (binding['player']+0x68, bytes(8)), "player_vtable": (binding['player'], bytes(8)),
+            "entity_manager": (api.base+m.ENTITY_RVA, bytes(8)), "pool": (extra['entities']+0x20290, bytes(8)),
+            "mapping": (binding['pool']+8, bytes(8)), "capacity": (binding['pool']+0x120, bytes(4)),
+        }
+        if condition in mutations:uc.mem_write(*mutations[condition])
+        calls, state, writes = [], {}, []
+        def hook(cpu, address, size, unused):
+            if address == original:
+                calls.append('original'); self.assertEqual(snapshot(), inputs)
+                rsp = cpu.reg_read(x.UC_X86_REG_RSP); self.assertEqual(rsp % 16, 8)
+                self.assertEqual(struct.unpack('<3Q', cpu.mem_read(rsp+0x28, 24)), (xyz, observer, source))
+                state['native_return'] = struct.unpack('<Q', cpu.mem_read(rsp, 8))[0]
+                if not native:
+                    for n, name in enumerate(registers[:7]):cpu.reg_write(getattr(x, 'UC_X86_REG_'+name), 0xBEEF000+n)
+                    for n in range(6):cpu.reg_write(getattr(x, 'UC_X86_REG_XMM'+str(n)), (0xABCDEF0123456789 << 32)|(bits(score) if n == 0 else n))
+                    cpu.reg_write(x.UC_X86_REG_EFLAGS, 0x202)
+            elif address == state.get('native_return'):
+                state['expected'] = snapshot()
+            elif address == qpc:
+                calls.append('qpc'); self.assertEqual(cpu.reg_read(x.UC_X86_REG_RSP) % 16, 8)
+                cpu.mem_write(cpu.reg_read(x.UC_X86_REG_RCX), struct.pack('<Q', 1000))
+                for name in registers[:7]:cpu.reg_write(getattr(x, 'UC_X86_REG_'+name), 0xDEAD)
+                for n in range(6):cpu.reg_write(getattr(x, 'UC_X86_REG_XMM'+str(n)), 0xDEAD)
+                cpu.reg_write(x.UC_X86_REG_RAX, 0 if condition == 'qpc_fail' else 1)
+                cpu.reg_write(x.UC_X86_REG_EFLAGS, 0x202)
+                if condition == 'sequence_race':cpu.mem_write(header+64, struct.pack('<Q', 4))
+                elif condition and condition.startswith('late_'):cpu.mem_write(*mutations[condition[5:]])
+            elif address == continuation:
+                state['returned'] = snapshot(); state['rsp'] = cpu.reg_read(x.UC_X86_REG_RSP)
+            elif address in (api.base+0x612C9F, api.base+0x612CE2):
+                state['contributes'] = address == api.base+0x612C9F
+                cpu.emu_stop()
+            elif address-api.base in dependencies:
+                kind, value = dependencies[address-api.base]
+                if kind == 'rax':cpu.reg_write(x.UC_X86_REG_RAX, value)
+                else:cpu.reg_write(x.UC_X86_REG_XMM0, bits(value))
+        uc.hook_add(UC_HOOK_CODE, hook)
+        uc.hook_add(UC_HOOK_MEM_WRITE, lambda cpu, access, address, size, value, unused:writes.append((address, size)))
+        uc.emu_start(api.allocation, 0, count=20000)
+        self.assertEqual(calls.count('original'), 1)
+        self.assertIn('returned', state); self.assertIn('contributes', state)
+        self.assertEqual(state['returned'][0], state['expected'][0])
+        self.assertEqual(state['returned'][1][1:], state['expected'][1][1:])
+        self.assertEqual(state['returned'][1][0] >> 32, state['expected'][1][0] >> 32)
+        self.assertEqual(state['returned'][2], state['expected'][2])
+        self.assertEqual(state['rsp'], caller_sp)
+        self.assertEqual(bytes(uc.mem_read(caller_sp, 64)), caller_bytes)
+        self.assertTrue(all(0x300000000 <= address and address+size <= caller_sp
+                            or header+256 <= address and address+size <= header+320 for address, size in writes), writes)
+        stats = struct.unpack('<4Q2f3Q', uc.mem_read(header+256, 64))
+        state['native_score'] = struct.unpack('<f', struct.pack('<I', state['expected'][1][0] & 0xFFFFFFFF))[0]
+        state['score'] = struct.unpack('<f', struct.pack('<I', state['returned'][1][0] & 0xFFFFFFFF))[0]
+        return state, stats
+
+    def test_scent_scalar_only_all_seven_args_flags_and_pet_receiver(self):
+        for receiver, score in itertools.product(('wildlife', 'pet'), (0., .75, 4.)):
+            with self.subTest(receiver=receiver, score=score):
+                state, stats = self.execute(receiver=receiver, score=score)
+                self.assertEqual(state['score'], 0); self.assertFalse(state['contributes'])
+                self.assertEqual(stats[:4], (1, 1, 0, 0)); self.assertEqual(stats[4:6], (score, 0))
+
+    def test_scent_off_other_sources_binding_and_late_races_keep_native_score(self):
+        cases = [(False, None, 'player'), (True, None, 'animal'), (True, None, 'other_player')]
+        conditions = ('expired', 'odd', 'qpc_fail', 'world', 'world_inactive', 'owner', 'type', 'inactive',
+                      'character_vtable', 'generation', 'slot', 'source_index', 'handle', 'local_manager',
+                      'local_slot', 'player_rebinding', 'player_link', 'player_backlink', 'player_vtable',
+                      'entity_manager', 'pool', 'mapping', 'capacity', 'sequence_race')
+        conditions += tuple('late_'+name for name in conditions if name not in ('odd', 'qpc_fail', 'sequence_race', 'expired'))
+        cases += [(True, condition, 'player') for condition in conditions]
+        for active, condition, target in cases:
+            with self.subTest(active=active, condition=condition, target=target):
+                state, stats = self.execute(active=active, condition=condition, target=target)
+                self.assertEqual(state['score'], .75); self.assertTrue(state['contributes'])
+                self.assertEqual(stats[:4], (1, 0, 0, 1))
+
+    def test_real_scent_math_wind_angle_distance_posture_and_native_consumer(self):
+        positive = 0
+        for posture, wind, angle, distance in itertools.product(range(4), (0., 5., 10.), (0., 30., 90.), (0., 50., 300.)):
+            with self.subTest(posture=posture, wind=wind, angle=angle, distance=distance):
+                off, _ = self.execute(native=True, active=False, posture=posture, wind=wind, angle=angle, distance=distance)
+                on, _ = self.execute(native=True, posture=posture, wind=wind, angle=angle, distance=distance)
+                self.assertEqual(off['score'], off['native_score'])
+                profile = self.fixture_data['profiles'][posture]
+                mix = min(max(wind, 0.), 10.)/10.
+                zero_distance = profile[2]+(profile[6]-profile[2])*mix
+                one_distance = profile[3]+(profile[7]-profile[3])*mix
+                zero_angle = profile[4]+(profile[8]-profile[4])*mix
+                one_angle = profile[5]+(profile[9]-profile[5])*mix
+                distance_factor = min(max((zero_distance-distance)/(zero_distance-one_distance), 0.), 1.)
+                angle_factor = min(max((zero_angle-angle)/(zero_angle-one_angle), 0.), 1.)
+                expected = (profile[0]+(profile[1]-profile[0])*.5)*distance_factor*angle_factor
+                self.assertAlmostEqual(off['score'], expected, places=6)
+                self.assertEqual(off['contributes'], expected > 0)
+                self.assertEqual(on['native_score'], off['native_score'])
+                self.assertEqual(on['score'], 0); self.assertFalse(on['contributes'])
+                positive += off['score'] > 0
+        self.assertGreater(positive, 0)
+        for target, receiver, eliminator in itertools.product(('player', 'animal'), ('wildlife', 'pet'), (False, True)):
+            with self.subTest(target=target, receiver=receiver, eliminator=eliminator):
+                state, _ = self.execute(native=True, target=target, receiver=receiver, eliminator=eliminator)
+                self.assertGreater(state['native_score'], 0)
+                self.assertEqual(state['score'], 0 if target == 'player' else state['native_score'])
 
 
 if __name__ == "__main__":

@@ -4,9 +4,9 @@ A portable Windows mod for **single-player** `theHunter: Call of the Wild`. It p
 
 **Download:** [Latest stable release](https://github.com/fullmetalsonic/cotw-animal-outline/releases/latest) · **[Validation details](VALIDATION.md)** · [한국어 안내](README.ko.md)
 
-## v0.4.0
+## v0.4.1 release
 
-v0.4.0 adds the Longbow Silencer, automatic Korean/English UI, master switches, and a global toggle shortcut.
+v0.4.1 adds player scent suppression to the existing Ninja switch. The release also includes the Longbow Silencer, automatic Korean/English UI, master switches, and a global toggle shortcut introduced in v0.4.0.
 
 ### Modes
 
@@ -14,7 +14,7 @@ Each mode has its own switch and is OFF by default. Use **ALL ON** or **ALL OFF*
 
 - **Live animal outline:** Choose white or blue. Applies to loaded animals, including animals loaded later. It does not spot animals automatically or reveal animal information.
 - **Carcass outline:** Independently highlights loaded carcasses in a chosen color (default orange, `#FF5900`). It does not force distant, unloaded carcasses to appear.
-- **Ninja:** Suppresses AI hearing and local visual detection of the player and the player's current ATV movement. Player audio, HUD, scent, and gunshot events remain unchanged unless **Silencer** is enabled separately.
+- **Ninja:** Suppresses AI hearing of player/current ATV movement, local visual detection, and player scent detection. OFF restores the native calculations. Player audio, HUD, scent-eliminator supplies/timers, wind, and other animals' scent remain unchanged. Gunshot events use the native calculation unless **Silencer** is enabled separately. The new scent filter has not been verified with animals in the running game.
 - **Keep Dog Outline:** Preserves the game's native pet outline, color, and occlusion behavior while other animal clues are hidden. **Ninja** still applies to the pet.
 - **Hellhound:** Requires a dog with the Retriever job. Keeps the native class 1 fetch behavior and allows classes 2–9 to be brought to the player and placed about 3 m in front for the normal `E` harvest interaction. It does not edit class, mass, trophy, or damage data, and it does not harvest automatically. Actual class 2 and 3 interactions were user-verified; classes 4–9 were CPU-only checks. Realistic large-corpse carrying poses are not implemented.
 - **Silencer:** Uses longbow firing audio and bow impact audio for all 137 supported weapons (70 rifles, 20 handguns, 28 shotguns, and 19 archery weapons). AI fire/impact calculations use the native longbow profile: fire score 2 through 10 m falls to zero at 75 m; impact score 1 through 25 m falls to zero at 50 m. It does not change ballistics, damage, ammunition, or reload sounds. CPU/native audio and AI calculations passed; **in-game playback and listening have not been verified**. Source-event distance/parameter defaults remain; exact audible-volume equivalence is not claimed. See [VALIDATION.md](VALIDATION.md).

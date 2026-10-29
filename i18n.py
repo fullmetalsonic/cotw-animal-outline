@@ -171,7 +171,7 @@ EN = {
     '윤곽 색상 (OFF에서 선택):': 'Outline color (select while OFF):',
     '윤곽 쓰기는 정확히 28바이트여야 합니다': 'An outline write must be exactly 28 bytes',
     '이 빌드의 사냥감 구분 검증이 아직 완료되지 않았습니다': 'Animal classification has not been verified for this build',
-    '이동·탈것 소음과 플레이어의 모습에 대한 AI 감지를 차단합니다. 효과음과 게임 소음 게이지는 유지되며, 냄새·발포 감지는 그대로입니다. 승하차 같은 상태 전환에는 잠시 대기 후 자동으로 다시 적용합니다.': 'Blocks AI detection of movement and vehicle noise, and player visibility. Sound effects and the game noise meter stay unchanged; smell and gunshot detection remain native. Automatically reapplies after transitions such as entering or leaving a vehicle.',
+    '이동·탈것 소음과 플레이어의 모습·냄새에 대한 AI 감지를 차단합니다. 효과음과 게임 소음 게이지는 유지되며, 발포 감지는 별도입니다. 승하차 같은 상태 전환에는 잠시 대기 후 자동으로 다시 적용합니다.': 'Blocks AI detection of movement and vehicle noise, and player visibility and scent. Sound effects and the game noise meter stay unchanged; gunshot detection is separate. Automatically reapplies after transitions such as entering or leaving a vehicle.',
     '일부 게임 스레드 재개에 실패했습니다': 'Could not resume some game threads',
     '잘못된 윤곽 주소입니다': 'The outline address is invalid',
     '전체 OFF': 'All OFF',

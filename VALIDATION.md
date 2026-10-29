@@ -1,4 +1,17 @@
-# Validation — v0.4.0
+# Validation — v0.4.1 release
+
+Checked 2026-10-29. v0.4.1 adds player scent suppression to the existing Ninja switch. The tested executable is the one included in the v0.4.1 release.
+
+- **PASS — native scent calculation:** The installed `5ECD40` function bytes were executed in a controlled CPU fixture for four stances, three wind speeds, three angles and three distances: 108 conditions, each ON and OFF (216 executions). Skill, region and weather services use controlled neutral returns; this is not a complete running-game simulation.
+- **PASS — native caller:** The actual caller's instructions skip adding a scent entry when the filtered score is zero. The seven original arguments, one original call, register/flag return state and upper 96 bits of XMM0 are preserved. Only the local player's scalar scent score changes; wildlife and pet receivers use the same rule. Other animals' scent keeps the native score.
+- **PASS — existing code:** The original 8,192-byte hearing/vision bundle is unchanged. Scent has its own additional page and lease. No scent-eliminator stock/timer, wind, weapon or audio state is written.
+- **PASS — Ninja tests:** All 24 targeted tests pass, including native scent/caller execution, local and foreign sources, existing two-page reuse, install/write/flush failures, transitions and all three leases expiring together on failure. The 12,288-byte bundle SHA-256 is `2315f1844652c438df8dbabf37d31603d58344c28df9cd334e90e7d6bbaa4f2d`.
+- **PASS — released build:** All 128 unit tests, 24 source self-checks and frozen EXE self-checks pass. All 14 embedded application modules and eight bundled data files match the current source. The other five native binaries are unchanged, and rebuilding the Ninja ASM reproduces the bundle exactly. EXE: 13,616,577 bytes, SHA-256 `8cb3fe57dec069c78dc515a6aa01eb90d9567847ed3c0fbc3cc1f0763e0d0b4e`.
+- **PASS — UI:** Hidden real-Tk Korean/English windows at 490×550 include the updated Ninja help. Individual buttons, master switches and the hotkey queue route remain operational without game input.
+- **NOT RUN — gameplay:** Actual animal responses to the new scent filter have not been tested. Existing alertness and remembered detections are not cleared by enabling Ninja.
+- **UNRESOLVED — reported audio behavior:** An unexpected compound-bow firing sound during later equipment/actions was reported before Silencer was added. The existing capture does not reproduce it; it lacks stop/release/parameter and output-audio data. No cause or fix is claimed in this release.
+
+## v0.4.0 — previously released baseline
 
 Checked 2026-10-29. [한국어 및 이전 배포 기록](VALIDATION.ko.md)
 

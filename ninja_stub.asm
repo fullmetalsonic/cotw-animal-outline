@@ -387,3 +387,176 @@ v_restore:
     ret
 times 8192-($-$$) db 0
 vision_header:
+; Scent uses its own CALL/header; both preceding pages remain byte-stable.
+%define SFRAME 0x120
+scent_entry:
+    pushfq
+    sub rsp, SFRAME
+    mov [rsp+0x100], rax
+    mov rax, [rsp+SFRAME+0x30] ; original arg5: receiver XYZ
+    mov [rsp+0x20], rax
+    mov rax, [rsp+SFRAME+0x38] ; original arg6: receiver sense data
+    mov [rsp+0x28], rax
+    mov rax, [rsp+SFRAME+0x40] ; original arg7: current scent source
+    mov [rsp+0x30], rax
+    mov [rsp+0xD8], rax
+    mov rax, [rsp+0x100]
+    push qword [rsp+SFRAME]
+    popfq
+    call [rel scent_header+40] ; original scent calculation always executes
+    pushfq
+    pop qword [rsp+0xF8]
+    mov [rsp+0x20], rax
+    mov [rsp+0x28], rcx
+    mov [rsp+0x30], rdx
+    mov [rsp+0x38], r8
+    mov [rsp+0x40], r9
+    mov [rsp+0x48], r10
+    mov [rsp+0x50], r11
+    movdqu [rsp+0x60], xmm0
+    movdqu [rsp+0x70], xmm1
+    movdqu [rsp+0x80], xmm2
+    movdqu [rsp+0x90], xmm3
+    movdqu [rsp+0xA0], xmm4
+    movdqu [rsp+0xB0], xmm5
+    mov [rsp+0xE0], rsi
+    mov [rsp+0xE8], rdi
+    mov dword [rsp+0xF0], 0
+    mov rsi, [rsp+0xD8]
+    lea r10, [rel scent_header]
+    lock inc qword [r10+256]
+    mov r11, [r10+64]
+    test r11, 1
+    jnz s_fallback
+    mov [rsp+SEQUENCE], r11
+    mov rax, [r10+72]
+    test rax, rax
+    jz s_fallback
+    mov [rsp+DEADLINE], rax
+    cmp rsi, [r10+88]
+    jne s_fallback
+s_candidate:
+    mov r9, [r10+80]
+    test r9, r9
+    jz s_fallback
+    mov rax, [r10+208]
+    cmp [r9], rax
+    jne s_fallback
+    mov rax, [r10+224]
+    mov rax, [rax]
+    test rax, rax
+    jz s_fallback
+    cmp dword [rax+0x48], 7
+    jne s_fallback
+    cmp byte [rax+0x7C], 0
+    je s_fallback
+    mov rax, [r10+48]
+    mov rax, [rax]
+    test rax, rax
+    jz s_fallback
+    mov rax, [rax+0x60]
+    test rax, rax
+    jz s_fallback
+    cmp [rax+0x170], r9
+    jne s_fallback
+    mov rax, [r9+0x2400]
+    sub rax, 0x10
+    cmp rax, [r10+112]
+    jne s_fallback
+    mov rdx, [r10+216]
+    cmp [rax], rdx
+    jne s_fallback
+    cmp [rax+0x68], r9
+    jne s_fallback
+    mov eax, [r9+0x2098]
+    cmp rax, [r10+96]
+    jne s_fallback
+    test ax, ax
+    jz s_fallback
+    mov r8d, eax
+    shr eax, 16
+    mov rdx, [r10+56]
+    mov rdx, [rdx]
+    test rdx, rdx
+    jz s_fallback
+    mov rdx, [rdx+0x20290]
+    cmp rdx, [r10+104]
+    jne s_fallback
+    cmp eax, [rdx+0x120]
+    jae s_fallback
+    mov rcx, [rdx+8]
+    cmp rcx, [r10+120]
+    jne s_fallback
+    mov eax, [rcx+rax*4]
+    cmp ax, r8w
+    jne s_fallback
+    shr eax, 16
+    imul rax, rax, 0x180
+    add rax, [rdx]
+    cmp rax, [r10+88]
+    jne s_fallback
+    cmp dword [rax+0x170], 1
+    jne s_fallback
+    test byte [rax+0x17C], 1
+    jz s_fallback
+    cmp [rax+0xB8], r9
+    jne s_fallback
+    mov r8, [r10+96]
+    shr r8d, 16
+    cmp [rax+0x174], r8w
+    jne s_fallback
+    cmp r11, [r10+64]
+    jne s_fallback
+    cmp dword [rsp+0xF0], 0
+    jne s_filter
+    mov dword [rsp+0xF0], 1
+    lea rcx, [rsp+QPC]
+    mov rax, [r10+32]
+    call [rax]
+    test eax, eax
+    jz s_fallback
+    mov rax, [rsp+QPC]
+    cmp rax, [rsp+DEADLINE]
+    jae s_fallback
+    lea r10, [rel scent_header]
+    mov r11, [rsp+SEQUENCE]
+    cmp r11, [r10+64]
+    jne s_fallback
+    jmp s_candidate ; complete world/local/generation binding after QPC
+s_filter:
+    lock inc qword [r10+264]
+    mov eax, [rsp+0x60]
+    mov [r10+288], eax
+    mov dword [r10+292], 0
+    mov [r10+296], rsi
+    mov rax, [rsp+QPC]
+    mov [r10+304], rax
+    mov [r10+312], r11
+    mov dword [rsp+0x60], 0 ; only scent scalar, upper96 bits unchanged
+    jmp s_restore
+s_fallback:
+    lea r10, [rel scent_header]
+    lock inc qword [r10+280]
+s_restore:
+    movdqu xmm0, [rsp+0x60]
+    movdqu xmm1, [rsp+0x70]
+    movdqu xmm2, [rsp+0x80]
+    movdqu xmm3, [rsp+0x90]
+    movdqu xmm4, [rsp+0xA0]
+    movdqu xmm5, [rsp+0xB0]
+    mov rax, [rsp+0x20]
+    mov rcx, [rsp+0x28]
+    mov rdx, [rsp+0x30]
+    mov r8, [rsp+0x38]
+    mov r9, [rsp+0x40]
+    mov r10, [rsp+0x48]
+    mov r11, [rsp+0x50]
+    mov rsi, [rsp+0xE0]
+    mov rdi, [rsp+0xE8]
+    push qword [rsp+0xF8]
+    popfq
+    lea rsp, [rsp+SFRAME+8]
+    ret
+
+times 12288-($-$$) db 0
+scent_header:

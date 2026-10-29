@@ -1,4 +1,4 @@
-"""Leased local-player AI movement-hearing and visual contribution filters."""
+"""Leased local-player AI movement-hearing, vision and scent filters."""
 import hashlib
 from pathlib import Path
 import struct
@@ -11,24 +11,31 @@ CALL_RVA, ORIGINAL_RVA = 0x5EC96C, 0x5F0D00
 ORIGINAL_CALL = bytes.fromhex("e88f430000")
 VISION_CALL_RVA, VISION_ORIGINAL_RVA = 0x612F3E, 0x5ED230
 VISION_ORIGINAL_CALL = bytes.fromhex("e8eda2fdff")
+SCENT_CALL_RVA, SCENT_ORIGINAL_RVA = 0x612C7B, 0x5ECD40
+SCENT_ORIGINAL_CALL = bytes.fromhex("e8c0a0fdff")
 WORLD_RVA, LOCAL_RVA, ENTITY_RVA = 0x27C5DC8, 0x27F1478, 0x27C5D50
 QPC_IAT_RVA = 0x1920518
 CHAR_VTABLE_RVA, PLAYER_VTABLE_RVA = 0x1A60028, 0x1EE24A0
 CODE_SIZE, HEADER_SIZE, STATS_SIZE = 4096, 256, 64
-BUNDLE_SIZE = CODE_SIZE * 2
+BUNDLE_SIZE = CODE_SIZE * 3
 VISION_STATS_OFFSET = 288
 MAGIC = b"COTW_NINJA_V1".ljust(16, b"\0")
 VISION_MAGIC = b"COTW_NINJAVIS_V1".ljust(16, b"\0")
+SCENT_MAGIC = b"COTW_NINJASNT_V1".ljust(16, b"\0")
 VEHICLE_VTABLE_RVA, VEHICLE_INTERFACE_RVA = 0x1F59DA0, 0x1F5A248
 LEASE_SECONDS = .30
 STUB_SHA256 = "5199ef0766aed7094b0bc5fe8c1713f2431ec8ccd23404f73ac43cc49104317e"
 VISION_STUB_SHA256 = "79b4862d5eb3a30ec06bbcc578770185e26331e6bde93480bf9ef70cc7cd6831"
+SCENT_STUB_SHA256 = "5b7a2fdc8113b00d469486174436ddbd5d1dcdca9017d0569f7d40ce0597bab9"
 SIGNATURES = {
     ORIGINAL_RVA: bytes.fromhex("4881ec880000000f297424700f57f60fb6c2440f29442450450f57c0"),
     0x5EC971: bytes.fromhex("f30f5ff7440f28f00f28bc24b0000000f3410f59f1440f288c2490000000f3440f58f6"),
     0x5EC6F3: bytes.fromhex("4585c07455f6862401000002744c498b96c8030000"),
     VISION_ORIGINAL_RVA: bytes.fromhex("4c8bdc49895b208954241057415641574881ec00010000488bf9440fb6d248b9b301000000010000450f295b8848b825232284e49cf2cb4d8bf84c33"),
     0x612F43: bytes.fromhex("f783d8000000000001007406410f28f0eb04410f28f1f30f59f00f2ff77667488bd3488b5c2430"),
+    SCENT_ORIGINAL_RVA: bytes.fromhex("488bc44889582041564881ecb00000000f2970e849bab301000000010000440f"),
+    0x612C57: bytes.fromhex("48895c24304c897c2428488d44246048894424200f28d8410f28d58b9580000000498bcd"),
+    0x612C80: bytes.fromhex("f783d8000000000001007406410f28f1eb04410f28f0f30f59f00f2f"),
 }
 
 
@@ -41,14 +48,18 @@ class NinjaMode:
         self.game, self.writer = game, writer
         self.api = api if api is not None else NativeAPI(game, writer)
         bundle = code if code is not None else Path(__file__).with_name("ninja_stub.bin").read_bytes()
-        self.code, self.vision_code = bundle[:CODE_SIZE], bundle[CODE_SIZE:]
+        self.code, self.vision_code, self.scent_code = (bundle[:CODE_SIZE], bundle[CODE_SIZE:CODE_SIZE*2],
+                                                     bundle[CODE_SIZE*2:])
         if (len(bundle) != BUNDLE_SIZE or hashlib.sha256(self.code).hexdigest() != STUB_SHA256
-                or hashlib.sha256(self.vision_code).hexdigest() != VISION_STUB_SHA256):
+                or hashlib.sha256(self.vision_code).hexdigest() != VISION_STUB_SHA256
+                or hashlib.sha256(self.scent_code).hexdigest() != SCENT_STUB_SHA256):
             raise ValueError("닌자 모드 바이너리를 확인하지 못했습니다")
         self.allocation = None
         self.sequence = 0
         self.vision_allocation = None
         self.vision_sequence = 0
+        self.scent_allocation = None
+        self.scent_sequence = 0
         self.last_binding = None
         self.last_vehicle_binding = None
         self.lock = threading.RLock()
@@ -61,6 +72,10 @@ class NinjaMode:
     def vision_site(self):
         return self.game.base + VISION_CALL_RVA
 
+    @property
+    def scent_site(self):
+        return self.game.base + SCENT_CALL_RVA
+
     def _u32(self, address):
         return struct.unpack("<I", self.api.read(address, 4))[0]
 
@@ -71,24 +86,25 @@ class NinjaMode:
         for rva, expected in SIGNATURES.items():
             if self.api.read(self.game.base+rva, len(expected)) != expected:
                 raise RuntimeError("닌자 모드 감지 코드가 검증된 버전과 다릅니다")
-        for vision, site, original in ((False, self.site, ORIGINAL_CALL),
-                                      (True, self.vision_site, VISION_ORIGINAL_CALL)):
+        for vision, scent, site, original in ((False, False, self.site, ORIGINAL_CALL),
+                                             (True, False, self.vision_site, VISION_ORIGINAL_CALL),
+                                             (False, True, self.scent_site, SCENT_ORIGINAL_CALL)):
             current = self.api.read(site, 5)
             if current == original:
                 continue
             if current[:1] != b"\xe8":
                 raise RuntimeError("닌자 모드 호출 코드가 다른 프로그램에 의해 변경되었습니다")
-            self._verify_owned(site+5+struct.unpack("<i", current[1:])[0], vision)
+            self._verify_owned(site+5+struct.unpack("<i", current[1:])[0], vision, scent)
 
-    def _header(self, vision=False):
+    def _header(self, vision=False, scent=False):
         result = bytearray(HEADER_SIZE)
-        result[:16] = VISION_MAGIC if vision else MAGIC
+        result[:16] = SCENT_MAGIC if scent else VISION_MAGIC if vision else MAGIC
         struct.pack_into("<II5Q", result, 16, 1, 0, self.game.base,
-                         self.game.base+QPC_IAT_RVA, self.game.base+(VISION_ORIGINAL_RVA if vision else ORIGINAL_RVA),
+                         self.game.base+QPC_IAT_RVA, self.game.base+(SCENT_ORIGINAL_RVA if scent else VISION_ORIGINAL_RVA if vision else ORIGINAL_RVA),
                          self.game.base+LOCAL_RVA, self.game.base+ENTITY_RVA)
-        result[128:160] = hashlib.sha256(self.vision_code if vision else self.code).digest()
+        result[128:160] = hashlib.sha256(self.scent_code if scent else self.vision_code if vision else self.code).digest()
         result[160:192] = bytes.fromhex(probe.EXPECTED_SHA256)
-        struct.pack_into("<5Q", result, 192, ALLOCATION_SIZE, self.vision_site if vision else self.site,
+        struct.pack_into("<5Q", result, 192, ALLOCATION_SIZE, self.scent_site if scent else self.vision_site if vision else self.site,
                          self.game.base+CHAR_VTABLE_RVA, self.game.base+PLAYER_VTABLE_RVA,
                          self.game.base+WORLD_RVA)
         if vision:
@@ -96,37 +112,37 @@ class NinjaMode:
                              self.game.base+VEHICLE_INTERFACE_RVA)
         return bytes(result)
 
-    def _verify_owned(self, allocation, vision=False):
+    def _verify_owned(self, allocation, vision=False, scent=False):
         if not 0x10000 <= allocation <= 0x7FFFFFFFFFFF-ALLOCATION_SIZE or allocation & 0xFFFF:
             raise RuntimeError("기존 닌자 모드 위치가 유효하지 않습니다")
         actual = self.api.read(allocation+CODE_SIZE, HEADER_SIZE)
-        expected = self._header(vision)
+        expected = self._header(vision, scent)
         if (actual[:64] != expected[:64] or actual[128:] != expected[128:]
-                or self.api.read(allocation, CODE_SIZE) != (self.vision_code if vision else self.code)):
+                or self.api.read(allocation, CODE_SIZE) != (self.scent_code if scent else self.vision_code if vision else self.code)):
             raise RuntimeError("기존 닌자 모드 소유권과 코드를 확인하지 못했습니다")
-        setattr(self, "vision_sequence" if vision else "sequence", struct.unpack_from("<Q", actual, 64)[0])
+        setattr(self, "scent_sequence" if scent else "vision_sequence" if vision else "sequence", struct.unpack_from("<Q", actual, 64)[0])
 
-    def _install(self, vision=False):
+    def _install(self, vision=False, scent=False):
         self._check_signatures()
         if hashlib.sha256(self.game.exe.read_bytes()).hexdigest() != probe.EXPECTED_SHA256:
             raise RuntimeError("지원하지 않는 게임 파일이어서 닌자 모드를 시작하지 않았습니다")
-        site = self.vision_site if vision else self.site
-        original = VISION_ORIGINAL_CALL if vision else ORIGINAL_CALL
-        code = self.vision_code if vision else self.code
-        attr = "vision_allocation" if vision else "allocation"
+        site = self.scent_site if scent else self.vision_site if vision else self.site
+        original = SCENT_ORIGINAL_CALL if scent else VISION_ORIGINAL_CALL if vision else ORIGINAL_CALL
+        code = self.scent_code if scent else self.vision_code if vision else self.code
+        attr = "scent_allocation" if scent else "vision_allocation" if vision else "allocation"
         current = self.api.read(site, 5)
         if current != original:
             if current[:1] != b"\xe8":
                 raise RuntimeError("닌자 모드 호출 코드가 다른 프로그램에 의해 변경되었습니다")
             target = site+5+struct.unpack("<i", current[1:])[0]
-            self._verify_owned(target, vision)
+            self._verify_owned(target, vision, scent)
             setattr(self, attr, target)
-            self._publish(None, 0, vision=vision)
+            self._publish(None, 0, vision=vision, scent=scent)
             return
         allocation = self.api.allocate_near(site)
         self.api.write(allocation, code)
-        self.api.write(allocation+CODE_SIZE, self._header(vision)+bytes(96 if vision else STATS_SIZE))
-        self._verify_owned(allocation, vision)
+        self.api.write(allocation+CODE_SIZE, self._header(vision, scent)+bytes(96 if vision else STATS_SIZE))
+        self._verify_owned(allocation, vision, scent)
         self.api.protect(allocation, CODE_SIZE, 0x20)
         self.api.flush(allocation, CODE_SIZE)
         patch = rel_call(site, allocation)
@@ -261,10 +277,10 @@ class NinjaMode:
         # Without a closed-bound local-driver vehicle, publish only the player.
         return matches[0] if matches else None
 
-    def _publish(self, binding, deadline, *, vision=False, vehicle=None):
-        allocation = self.vision_allocation if vision else self.allocation
+    def _publish(self, binding, deadline, *, vision=False, scent=False, vehicle=None):
+        allocation = self.scent_allocation if scent else self.vision_allocation if vision else self.allocation
         header = allocation+CODE_SIZE
-        sequence_attr = "vision_sequence" if vision else "sequence"
+        sequence_attr = "scent_sequence" if scent else "vision_sequence" if vision else "sequence"
         sequence = ((getattr(self, sequence_attr)+2) & 0xFFFFFFFFFFFFFFFE) or 2
         setattr(self, sequence_attr, sequence)
         self.api.write(header+64, struct.pack("<Q", sequence-1))
@@ -292,15 +308,19 @@ class NinjaMode:
                     self._install()
                 if self.vision_allocation is None:
                     self._install(vision=True)
-                binding = self._binding()  # either install may pause the game
+                if self.scent_allocation is None:
+                    self._install(scent=True)
+                binding = self._binding()  # every install may pause the game
                 vehicle = self._vehicle_binding(binding)
-                for site, allocation in ((self.site, self.allocation), (self.vision_site, self.vision_allocation)):
+                for site, allocation in ((self.site, self.allocation), (self.vision_site, self.vision_allocation),
+                                         (self.scent_site, self.scent_allocation)):
                     if self.api.read(site, 5) != rel_call(site, allocation):
                         raise RuntimeError("닌자 모드 호출 코드가 바뀌었습니다")
                 now, frequency = self.api.clock()
                 deadline = now+int(LEASE_SECONDS*frequency)
                 self._publish(binding, deadline)
                 self._publish(binding, deadline, vision=True, vehicle=vehicle)
+                self._publish(binding, deadline, scent=True)
                 self.last_binding = binding
                 self.last_vehicle_binding = vehicle
                 return 1
@@ -317,11 +337,12 @@ class NinjaMode:
     def disable(self):
         with self.lock:
             errors = []
-            for vision, attr in ((False, "allocation"), (True, "vision_allocation")):
+            for vision, scent, attr in ((False, False, "allocation"), (True, False, "vision_allocation"),
+                                       (False, True, "scent_allocation")):
                 if getattr(self, attr) is None:
                     continue
                 try:
-                    self._publish(None, 0, vision=vision)
+                    self._publish(None, 0, vision=vision, scent=scent)
                 except OSError as error:
                     if self.api.is_running():
                         errors.append(error)
@@ -351,4 +372,10 @@ class NinjaMode:
                 result["vision"] = dict(total=total, filtered=player+vehicle, player=player, vehicle=vehicle,
                                         fallback=fallback, original_score=original, returned_score=filtered,
                                         source=source, qpc=qpc, sequence=sequence)
+            if self.scent_allocation is not None:
+                raw = self.api.read(self.scent_allocation+CODE_SIZE+HEADER_SIZE, STATS_SIZE)
+                total, filtered, _, fallback, original, returned, source, qpc, sequence = struct.unpack("<4Q2f3Q", raw)
+                result["scent"] = dict(total=total, filtered=filtered, fallback=fallback,
+                                       original_score=original, returned_score=returned,
+                                       source=source, qpc=qpc, sequence=sequence)
             return result
