@@ -1,11 +1,12 @@
 [CmdletBinding()]
-param()
+param([ValidateNotNullOrEmpty()][string]$OutputDirectory = 'dist')
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $buildRoot = $PSScriptRoot
 $buildLog = Join-Path $buildRoot 'build.log'
 $buildPython = Join-Path $buildRoot '.build-venv\Scripts\python.exe'
+$buildDist = if ([System.IO.Path]::IsPathRooted($OutputDirectory)) { $OutputDirectory } else { Join-Path $buildRoot $OutputDirectory }
 
 function Invoke-LoggedPython {
     param([Parameter(Mandatory = $true)][string[]]$ArgumentList)
@@ -48,17 +49,20 @@ try {
     # Some Python distributions require this public CA companion when creating
     # SSLContext. Keep their trust policy intact in the frozen application.
     Invoke-LoggedPython -ArgumentList @('-c', 'import ssl; ssl.create_default_context(); print("SSL context preflight: PASS")')
+    Invoke-LoggedPython -ArgumentList @('-c', 'import hashlib; from pathlib import Path; from corpse_outline import CODE_SIZE, STUB_SHA256; code = Path("corpse_stub.bin").read_bytes(); assert len(code) == CODE_SIZE and hashlib.sha256(code).hexdigest() == STUB_SHA256; print("Corpse renderer binary: PASS")')
+    Invoke-LoggedPython -ArgumentList @('-c', 'import hashlib; from pathlib import Path; from ninja_mode import CODE_SIZE, BUNDLE_SIZE, STUB_SHA256, VISION_STUB_SHA256; code = Path("ninja_stub.bin").read_bytes(); assert len(code) == BUNDLE_SIZE and hashlib.sha256(code[:CODE_SIZE]).hexdigest() == STUB_SHA256 and hashlib.sha256(code[CODE_SIZE:]).hexdigest() == VISION_STUB_SHA256; print("Ninja hearing and vision binaries: PASS")')
+    Invoke-LoggedPython -ArgumentList @('-c', 'import hashlib; from pathlib import Path; from pet_outline import CODE_SIZE, STUB_SHA256; code = Path("pet_stub.bin").read_bytes(); assert len(code) == CODE_SIZE and hashlib.sha256(code).hexdigest() == STUB_SHA256; print("Pet outline binary: PASS")')
     $sslCompanion = & $buildPython -c 'from pathlib import Path; import ssl; p = Path(ssl.__file__).with_name("codex-rejected-cas.pem"); print(str(p) if p.is_file() else "")'
     if ($LASTEXITCODE -ne 0) {
         throw 'Could not inspect Python SSL companion data.'
     }
-    $freezeArguments = @('-m', 'PyInstaller', '--noconfirm', '--clean', '--workpath', 'build/package', '--onefile', '--windowed', '--noupx', '--name', 'COTWAnimalOutline', '--add-data', 'THIRD_PARTY_NOTICES.txt;.')
+    $freezeArguments = @('-m', 'PyInstaller', '--noconfirm', '--workpath', 'build/package', '--distpath', $buildDist, '--onefile', '--windowed', '--noupx', '--name', 'COTWAnimalOutline', '--add-data', 'THIRD_PARTY_NOTICES.txt;.', '--add-data', 'corpse_stub.bin;.', '--add-data', 'ninja_stub.bin;.', '--add-data', 'pet_stub.bin;.')
     if (-not [string]::IsNullOrWhiteSpace($sslCompanion)) {
         $freezeArguments += @('--add-data', "$sslCompanion;.")
     }
     $freezeArguments += 'outline_mod.py'
     Invoke-LoggedPython -ArgumentList $freezeArguments
-    $buildArtifact = Get-Item -LiteralPath (Join-Path $buildRoot 'dist\COTWAnimalOutline.exe')
+    $buildArtifact = Get-Item -LiteralPath (Join-Path $buildDist 'COTWAnimalOutline.exe')
     $buildHash = Get-FileHash -LiteralPath $buildArtifact.FullName -Algorithm SHA256
     $buildResult = "PASS: $($buildArtifact.Name), $($buildArtifact.Length) bytes, SHA256 $($buildHash.Hash)"
     $buildResult | Tee-Object -FilePath $buildLog -Append

@@ -1,4 +1,4 @@
-"""Temporary, single-player outline refresh; never patches game files or code."""
+"""Temporary single-player memory modes; no direct game or save file edits."""
 import argparse
 import ctypes as C
 from ctypes import wintypes as W
@@ -11,6 +11,8 @@ import time
 
 import game_memory as probe
 from app_version import VERSION
+from ninja_mode import TransientNinjaState
+from pet_outline import TransientPetState
 from update_check import UpdateResult, check_update, is_release_url
 
 OUTLINE_OFFSET = 0x2468
@@ -82,6 +84,14 @@ def wild_resource_path(path):
     return not any(breed in compact for breed in ("bloodhound", "labrador", "germanshorthairedpointer", "germanpointer"))
 
 
+def health_matches(values, corpse=False):
+    if not isinstance(values, (tuple, list)) or len(values) != 2:
+        return False
+    maximum, current = values
+    return (all(isinstance(v, (int, float)) and math.isfinite(v) for v in values)
+            and maximum > 0 and ((current <= 0) if corpse else (current > 0)))
+
+
 class StaleTarget(RuntimeError):
     """A single animal no longer matches its snapshot; never authorizes a write."""
 
@@ -92,6 +102,12 @@ class LiveBackend:
         self.set_color(color)
         self.game = probe.GameMemory()
         self.file_stamp = self._stamp()
+        self.corpse_renderer = None
+        self.corpse_writer = None
+        self.ninja_mode = None
+        self.ninja_writer = None
+        self.pet_keeper = None
+        self.pet_writer = None
 
     def set_color(self, color):
         if color not in PAYLOADS:
@@ -137,12 +153,18 @@ class LiveBackend:
             K.CloseHandle(self.writer)
             self.writer = None
 
-    def eligible(self, row):
+    def wild_candidate(self, row):
         return (int(row["vtable_rva"], 16) in VERIFIED_WILD_VTABLE_RVAS
                 and wild_resource_path(row.get("definition_path_c0"))
                 and bool(row["flags_d4"] & 4) and row["state_cc"] != 0xDEADBEEF)
 
-    def validate(self, row, context):
+    def eligible(self, row):
+        return self.wild_candidate(row) and health_matches(row.get("hp_178"))
+
+    def eligible_corpse(self, row):
+        return self.wild_candidate(row) and health_matches(row.get("hp_178"), corpse=True)
+
+    def validate(self, row, context, corpse=False):
         singleton, manager = context
         if self.game.qword(self.game.base + probe.SINGLETON_RVA) != singleton or self.game.qword(singleton + 0xB8) != manager:
             raise RuntimeError("사냥터 연결이 바뀌어 모드를 껐습니다")
@@ -165,8 +187,11 @@ class LiveBackend:
             path = self.game.read(path_pointer, 240).split(b"\0", 1)[0].decode("ascii")
             if path != row.get("definition_path_c0") or not wild_resource_path(path):
                 raise StaleTarget("사냥감 리소스 경로가 바뀌었습니다")
-            if not self.eligible(row):
+            if not self.wild_candidate(row):
                 raise StaleTarget("검증되지 않은 사냥감은 갱신하지 않습니다")
+            health = struct.unpack("<2f", self.game.read(wrapper + 0x178, 8))
+            if not health_matches(health, corpse):
+                raise StaleTarget("사냥감의 생존 상태가 바뀌어 다음 목록에서 확인합니다")
             # The game owns these objects; a final identity check narrows, but
             # cannot eliminate, concurrent object-release races in a helper.
             if self.game.qword(wrapper) != character:
@@ -179,9 +204,94 @@ class LiveBackend:
             raise RuntimeError("쓰기 핸들이 닫혀 있습니다")
         typed_write(K, self.writer, int(row["character"], 16) + OUTLINE_OFFSET, self.payload)
 
+    def refresh_corpses(self, rows, context, color):
+        candidates = []
+        for row in rows:
+            if not self.eligible_corpse(row):
+                continue
+            try:
+                self.validate(row, context, corpse=True)
+            except StaleTarget:
+                continue
+            candidates.append(row)
+        if candidates and self.corpse_renderer is None:
+            from corpse_outline import CorpseRenderer
+            self.check()
+            self.corpse_writer = K.OpenProcess(0x438, False, self.game.pid)
+            if not self.corpse_writer:
+                raise RuntimeError("사체 표시를 위한 게임 프로세스 접근 권한을 얻지 못했습니다")
+            try:
+                self.corpse_renderer = CorpseRenderer(self.game, self.corpse_writer)
+            except Exception:
+                K.CloseHandle(self.corpse_writer)
+                self.corpse_writer = None
+                raise
+        if self.corpse_renderer:
+            return self.corpse_renderer.publish(candidates, color)
+        return 0
+
+    def stop_corpses(self):
+        if self.corpse_renderer:
+            self.corpse_renderer.disable()
+
+    def refresh_ninja(self):
+        if self.ninja_mode is None:
+            from ninja_mode import NinjaMode
+            self.check()
+            self.ninja_writer = K.OpenProcess(0x438, False, self.game.pid)
+            if not self.ninja_writer:
+                raise RuntimeError("닌자 모드를 위한 게임 프로세스 접근 권한을 얻지 못했습니다")
+            try:
+                self.ninja_mode = NinjaMode(self.game, self.ninja_writer)
+            except Exception:
+                K.CloseHandle(self.ninja_writer)
+                self.ninja_writer = None
+                raise
+        self.ninja_mode.publish()
+
+    def stop_ninja(self):
+        if self.ninja_mode:
+            self.ninja_mode.disable()
+
+    def refresh_pet(self):
+        if self.pet_keeper is None:
+            from pet_outline import PetOutlineKeeper
+            self.check()
+            self.pet_writer = K.OpenProcess(0x438, False, self.game.pid)
+            if not self.pet_writer:
+                raise RuntimeError("반려견 윤곽을 위한 게임 프로세스 접근 권한을 얻지 못했습니다")
+            try:
+                self.pet_keeper = PetOutlineKeeper(self.game, self.pet_writer)
+            except Exception:
+                K.CloseHandle(self.pet_writer)
+                self.pet_writer = None
+                raise
+        self.pet_keeper.publish()
+
+    def stop_pet(self):
+        if self.pet_keeper:
+            self.pet_keeper.disable()
+
     def close(self):
-        self.stop_writing()
-        self.game.close()
+        try:
+            if self.corpse_renderer:
+                self.corpse_renderer.close()
+        finally:
+            try:
+                if self.ninja_mode:
+                    self.ninja_mode.close()
+            finally:
+                try:
+                    if self.pet_keeper:
+                        self.pet_keeper.close()
+                finally:
+                    for name in ("corpse_writer", "ninja_writer", "pet_writer"):
+                        handle = getattr(self, name)
+                        if handle:
+                            K.CloseHandle(handle)
+                            setattr(self, name, None)
+                    self.stop_writing()
+                    self.game.close()
 
 
 class RefreshController:
@@ -207,10 +317,10 @@ class RefreshController:
             self.enabled = False
             self.context = None
 
-    def tick(self, backend):
+    def tick(self, backend, snapshot=None):
         try:
             backend.check()
-            rows, context, summary = backend.snapshot()
+            rows, context, summary = snapshot if snapshot is not None else backend.snapshot()
             count = 0
             for row in rows:
                 with self.lock:
@@ -242,6 +352,10 @@ class ModWorker(threading.Thread):
         self.color = color
         self.color_lock = threading.Lock()
         self.requested = threading.Event()
+        self.corpse_requested = threading.Event()
+        self.corpse_color = (1.0, 0.35, 0.0)
+        self.ninja_requested = threading.Event()
+        self.pet_requested = threading.Event()
         self.stopping = threading.Event()
         self.messages = queue.Queue()
         self.controller = RefreshController()
@@ -252,7 +366,27 @@ class ModWorker(threading.Thread):
 
     def close(self):
         self.off()
+        self.corpse_off()
+        self.ninja_off()
+        self.pet_off()
         self.stopping.set()
+
+    def ninja_off(self):
+        self.ninja_requested.clear()
+
+    def pet_off(self):
+        self.pet_requested.clear()
+
+    def corpse_off(self):
+        self.corpse_requested.clear()
+
+    def set_corpse_color(self, color):
+        if (not isinstance(color, (tuple, list)) or len(color) != 3
+                or not all(isinstance(v, (int, float)) and math.isfinite(v) and 0 <= v <= 1 for v in color)):
+            raise ValueError("사체 색상은 0~1 범위의 RGB 값이어야 합니다")
+        self.corpse_off()
+        with self.color_lock:
+            self.corpse_color = tuple(color)
 
     def set_color(self, color):
         if color not in PAYLOADS:
@@ -272,41 +406,93 @@ class ModWorker(threading.Thread):
                     if backend is None:
                         with self.color_lock:
                             backend = LiveBackend(self.color)
-                        self.messages.put(("연결됨 · 모드 OFF", 0, last_error or "사냥감 윤곽을 켤 준비가 되었습니다."))
-                    if self.requested.is_set():
-                        if not self.controller.enabled:
-                            rows, context, summary = backend.snapshot()
+                    if not self.requested.is_set():
+                        backend.stop_writing()
+                    if not self.corpse_requested.is_set():
+                        backend.stop_corpses()
+                    if not self.ninja_requested.is_set():
+                        backend.stop_ninja()
+                    if not self.pet_requested.is_set():
+                        backend.stop_pet()
+                    active = (self.requested.is_set() or self.corpse_requested.is_set()
+                              or self.ninja_requested.is_set() or self.pet_requested.is_set())
+                    if active or time.monotonic() - last_poll >= 1:
+                        rows, context, summary = backend.snapshot()
+                        count = sum(backend.eligible(row) for row in rows)
+                        corpse_count = sum(backend.eligible_corpse(row) for row in rows)
+                        if self.requested.is_set() and not self.controller.enabled:
                             with self.color_lock:
                                 backend.stop_writing()
                                 backend.set_color(self.color)
                                 backend.start_writing()
                                 self.controller.enable_if_requested(context, self.requested, self.stopping)
                         if self.controller.enabled:
-                            count, summary = self.controller.tick(backend)
+                            count, summary = self.controller.tick(backend, (rows, context, summary))
+                        if self.corpse_requested.is_set():
+                            with self.color_lock:
+                                corpse_color = self.corpse_color
+                            corpse_count = backend.refresh_corpses(rows, context, corpse_color)
+                            if not self.corpse_requested.is_set():
+                                backend.stop_corpses()
+                        ninja_state = "닌자 OFF"
+                        if self.ninja_requested.is_set():
+                            ninja_state = "닌자 ON"
+                            try:
+                                backend.refresh_ninja()
+                            except TransientNinjaState:
+                                # publish has disabled its leases; keep the user's
+                                # selection while the next tick rechecks identity.
+                                ninja_state = "닌자 ON · 상태 전환 대기"
+                            if not self.ninja_requested.is_set():
+                                backend.stop_ninja()
+                                ninja_state = "닌자 OFF"
+                        pet_state = "반려견 윤곽 OFF"
+                        if self.pet_requested.is_set():
+                            pet_state = "반려견 윤곽 ON"
+                            try:
+                                backend.refresh_pet()
+                            except TransientPetState:
+                                pet_state = "반려견 윤곽 ON · 연결 대기"
+                            if not self.pet_requested.is_set():
+                                backend.stop_pet()
+                                pet_state = "반려견 윤곽 OFF"
+                        if active:
                             last_error = None
-                            self.messages.put(("모드 ON", count, f"로드된 사냥감의 {COLOR_LABELS[backend.color]} 윤곽을 갱신하고 있습니다."))
-                    else:
-                        backend.stop_writing()
-                        if time.monotonic() - last_poll >= 1:
-                            rows, context, summary = backend.snapshot()
-                            count = sum(backend.eligible(row) for row in rows)
-                            self.messages.put(("연결됨 · 모드 OFF", count, last_error or "윤곽 갱신이 중지되었습니다. 임시 윤곽은 게임 진행 중 잠시 후 사라집니다."))
-                            last_poll = time.monotonic()
+                        live_on = self.requested.is_set() and self.controller.enabled
+                        detail = (f"살아 있는 사냥감의 {COLOR_LABELS[backend.color]} 윤곽을 갱신하고 있습니다." if live_on
+                                  else last_error or "살아 있는 사냥감의 윤곽 갱신이 중지되었습니다.")
+                        self.messages.put(("모드 ON" if live_on else "연결됨 · 모드 OFF", count, detail,
+                                           "사체 ON" if self.corpse_requested.is_set() else "사체 OFF", corpse_count,
+                                           ninja_state, pet_state))
+                        last_poll = time.monotonic()
                 except Exception as error:
-                    was_on = self.requested.is_set() or self.controller.enabled
+                    was_on = (self.requested.is_set() or self.controller.enabled or self.corpse_requested.is_set()
+                              or self.ninja_requested.is_set() or self.pet_requested.is_set())
                     if was_on:
                         last_error = str(error)
                     self.off()
+                    self.corpse_off()
+                    self.ninja_off()
+                    self.pet_off()
                     if backend:
-                        backend.close()
-                        backend = None
-                    self.messages.put(("오류 · 모드 OFF" if was_on else "게임 연결 대기 · 모드 OFF", 0, str(error)))
+                        try:
+                            backend.close()
+                        except OSError:
+                            # Stopped heartbeat leases expire even if disconnect
+                            # loses process access while the game is shutting down.
+                            pass
+                        finally:
+                            backend = None
+                    self.messages.put(("오류 · 모드 OFF" if was_on else "게임 연결 대기 · 모드 OFF", 0, str(error), "사체 OFF", 0, "닌자 OFF", "반려견 윤곽 OFF"))
                     self.stopping.wait(1)
                 self.stopping.wait(INTERVAL)
         finally:
             self.controller.disable()
             if backend:
-                backend.close()
+                try:
+                    backend.close()
+                except OSError:
+                    pass  # Native leases expire without this worker.
 
 
 def gui(color="white"):
@@ -329,21 +515,30 @@ def gui(color="white"):
 
 def run_gui(color="white"):
     import tkinter as tk
-    from tkinter import ttk
+    from tkinter import colorchooser, ttk
     shell = C.WinDLL("shell32")
     shell.SetCurrentProcessExplicitAppUserModelID.argtypes = [W.LPCWSTR]
     shell.SetCurrentProcessExplicitAppUserModelID.restype = C.c_long
     shell.SetCurrentProcessExplicitAppUserModelID("Local.COTW.WildAnimalOutlineMod")
     root = tk.Tk()
     root.title("COTW 사냥감 윤곽 모드")
-    root.geometry("550x530")
-    root.minsize(450, 510)
-    panel = ttk.Frame(root, padding=22)
-    panel.pack(fill="both", expand=True)
-    ttk.Label(panel, text="사냥감 기본 윤곽", font=("맑은 고딕", 17, "bold")).pack(anchor="w")
+    root.geometry(f"590x{max(550, min(1040, root.winfo_screenheight() - 90))}")
+    root.minsize(490, 550)
+    shell_panel = ttk.Frame(root)
+    shell_panel.pack(fill="both", expand=True)
+    canvas = tk.Canvas(shell_panel, highlightthickness=0)
+    scrollbar = ttk.Scrollbar(shell_panel, orient="vertical", command=canvas.yview)
+    scrollbar.pack(side="right", fill="y")
+    canvas.pack(side="left", fill="both", expand=True)
+    canvas.configure(yscrollcommand=scrollbar.set)
+    panel = ttk.Frame(canvas, padding=22)
+    panel_window = canvas.create_window((0, 0), window=panel, anchor="nw")
+    canvas.bind("<Configure>", lambda event: canvas.itemconfigure(panel_window, width=event.width))
+    canvas.bind_all("<MouseWheel>", lambda event: canvas.yview_scroll(-int(event.delta / 120), "units"))
+    ttk.Label(panel, text="사냥감 · 사체 · 반려견 · 닌자 모드", font=("맑은 고딕", 17, "bold")).pack(anchor="w")
     ttk.Label(panel, text="대상 빌드: 26051119 · 싱글플레이 전용").pack(anchor="w", pady=(5, 18))
     status = tk.StringVar(value="게임 연결 확인 중 · 모드 OFF")
-    count = tk.StringVar(value="표시 대상: 0마리")
+    count = tk.StringVar(value="살아 있는 사냥감: 0마리")
     detail = tk.StringVar(value="사냥터를 불러온 뒤 모드를 켜세요.")
     ttk.Label(panel, textvariable=status, font=("맑은 고딕", 12, "bold")).pack(anchor="w")
     ttk.Label(panel, textvariable=count).pack(anchor="w", pady=8)
@@ -384,6 +579,76 @@ def run_gui(color="white"):
     ttk.Button(buttons, text="모드 OFF", command=off).pack(side="left", fill="x", expand=True)
     detail_label = ttk.Label(panel, textvariable=detail, wraplength=465)
     detail_label.pack(anchor="w", fill="x", pady=12)
+    corpse_panel = ttk.LabelFrame(panel, text="사체 표시 · 독립 ON/OFF", padding=10)
+    corpse_panel.pack(fill="x", pady=(0, 10))
+    corpse_status = tk.StringVar(value="사체 OFF · 대상 0마리")
+    corpse_hex = tk.StringVar(value="사체 색상: #FF5900 · 변경")
+    ttk.Label(corpse_panel, textvariable=corpse_status).pack(anchor="w", pady=(0, 7))
+
+    def choose_corpse_color():
+        selected, hex_color = colorchooser.askcolor(color="#%02x%02x%02x" % tuple(
+            round(v * 255) for v in worker.corpse_color), parent=root, title="사체 윤곽 색상")
+        if selected is not None:
+            worker.set_corpse_color(tuple(v / 255.0 for v in selected))
+            corpse_hex.set(f"사체 색상: {hex_color.upper()} · 변경")
+
+    corpse_color_button = ttk.Button(corpse_panel, textvariable=corpse_hex, command=choose_corpse_color)
+    corpse_color_button.pack(anchor="w", fill="x")
+    corpse_buttons = ttk.Frame(corpse_panel)
+    corpse_buttons.pack(fill="x", pady=8)
+
+    def corpse_on():
+        corpse_color_button.state(["disabled"])
+        worker.corpse_requested.set()
+
+    def corpse_off():
+        worker.corpse_off()
+        corpse_color_button.state(["!disabled"])
+        corpse_status.set("사체 OFF")
+
+    ttk.Button(corpse_buttons, text="사체 ON", command=corpse_on).pack(side="left", fill="x", expand=True, padx=(0, 6))
+    ttk.Button(corpse_buttons, text="사체 OFF", command=corpse_off).pack(side="left", fill="x", expand=True)
+    corpse_help = ttk.Label(corpse_panel, text="사체만 별도 색상으로 표시합니다. OFF에서는 게임의 기본 사체 표시로 돌아갑니다.",
+                            wraplength=440)
+    corpse_help.pack(anchor="w", fill="x")
+    ninja_panel = ttk.LabelFrame(panel, text="닌자 모드 · 독립 ON/OFF", padding=10)
+    ninja_panel.pack(fill="x", pady=(0, 10))
+    ninja_status = tk.StringVar(value="닌자 OFF")
+    ttk.Label(ninja_panel, textvariable=ninja_status).pack(anchor="w", pady=(0, 7))
+    ninja_buttons = ttk.Frame(ninja_panel)
+    ninja_buttons.pack(fill="x", pady=(0, 8))
+
+    def ninja_on():
+        worker.ninja_requested.set()
+
+    def ninja_off():
+        worker.ninja_off()
+        ninja_status.set("닌자 OFF")
+
+    ttk.Button(ninja_buttons, text="닌자 ON", command=ninja_on).pack(side="left", fill="x", expand=True, padx=(0, 6))
+    ttk.Button(ninja_buttons, text="닌자 OFF", command=ninja_off).pack(side="left", fill="x", expand=True)
+    ninja_help = ttk.Label(ninja_panel, text="이동·탈것 소음과 플레이어의 모습에 대한 AI 감지를 차단합니다. 효과음과 게임 소음 게이지는 유지되며, 냄새·발포 감지는 그대로입니다. 승하차 같은 상태 전환에는 잠시 대기 후 자동으로 다시 적용합니다.",
+                          wraplength=440)
+    ninja_help.pack(anchor="w", fill="x")
+
+    pet_panel = ttk.LabelFrame(panel, text="반려견 윤곽 유지 · 독립 ON/OFF", padding=10)
+    pet_panel.pack(fill="x", pady=(0, 10))
+    pet_status = tk.StringVar(value="반려견 윤곽 OFF")
+    ttk.Label(pet_panel, textvariable=pet_status).pack(anchor="w", pady=(0, 7))
+    pet_buttons = ttk.Frame(pet_panel)
+    pet_buttons.pack(fill="x", pady=(0, 8))
+
+    def pet_on():
+        worker.pet_requested.set()
+
+    def pet_off():
+        worker.pet_off()
+        pet_status.set("반려견 윤곽 OFF")
+
+    ttk.Button(pet_buttons, text="반려견 윤곽 ON", command=pet_on).pack(side="left", fill="x", expand=True, padx=(0, 6))
+    ttk.Button(pet_buttons, text="반려견 윤곽 OFF", command=pet_off).pack(side="left", fill="x", expand=True)
+    pet_help = ttk.Label(pet_panel, text="전체 동물 흔적 숨김을 유지하면서 반려견 윤곽만 표시합니다. 게임의 사냥개 윤곽 켜기·색상과 원래 가림 판정을 따릅니다. 닌자 효과는 반려견에도 유지됩니다.", wraplength=440)
+    pet_help.pack(anchor="w", fill="x")
     updates_panel = ttk.LabelFrame(panel, text="업데이트", padding=9)
     updates_panel.pack(fill="x", pady=(3, 0))
     versions = tk.StringVar(value=f"현재 {VERSION} / 최신 확인 중")
@@ -427,6 +692,10 @@ def run_gui(color="white"):
     def resize(event):
         detail_label.configure(wraplength=max(260, event.width - 45))
         update_label.configure(wraplength=max(240, event.width - 65))
+        corpse_help.configure(wraplength=max(240, event.width - 65))
+        ninja_help.configure(wraplength=max(240, event.width - 65))
+        pet_help.configure(wraplength=max(240, event.width - 65))
+        canvas.configure(scrollregion=canvas.bbox("all"))
 
     panel.bind("<Configure>", resize)
     worker.start()
@@ -435,6 +704,7 @@ def run_gui(color="white"):
         nonlocal update_running, release_link
         for button in color_buttons:
             button.state(["disabled"] if worker.requested.is_set() or worker.controller.enabled else ["!disabled"])
+        corpse_color_button.state(["disabled"] if worker.corpse_requested.is_set() else ["!disabled"])
         latest = None
         while True:
             try:
@@ -443,8 +713,11 @@ def run_gui(color="white"):
                 break
         if latest and not (latest[0] == "모드 ON" and not worker.requested.is_set()):
             status.set(latest[0])
-            count.set(f"표시 대상: {latest[1]}마리")
+            count.set(f"살아 있는 사냥감: {latest[1]}마리")
             detail.set(latest[2])
+            corpse_status.set(f"{latest[3]} · 대상 {latest[4]}마리")
+            ninja_status.set(latest[5])
+            pet_status.set(latest[6])
         try:
             result = update_results.get_nowait()
         except queue.Empty:
@@ -568,7 +841,7 @@ def self_test():
     assert not controller.enabled
     # Exercise the real pre-write identity/resource validator with a fake memory
     # map; no process is opened and no memory API is called.
-    row = dict(wrapper="0x20000", character="0x30000", definition="0x40000",
+    row = dict(wrapper="0x20000", character="0x30000", definition="0x40000", hp_178=(20.0, 20.0),
                vtable_rva="0x1a60028", state_cc=123, flags_d4=5,
                definition_path_c0="animations/hp_ragdoll/animals/mexican_bobcat/a.ragdoll")
 
@@ -589,6 +862,8 @@ def self_test():
                     0x30000: self.base + 0x1A60028, 0x40000 + 0xC0: 0x70000}[address]
 
         def read(self, address, size):
+            if address == 0x20000 + 0x178:
+                return struct.pack("<2f", 20.0, 20.0)
             return bytes(self.raw) if address == 0x20000 else self.path.encode("ascii").ljust(size, b"\0")
 
     live = LiveBackend.__new__(LiveBackend)

@@ -39,10 +39,10 @@ class VersionTests(unittest.TestCase):
 
 class ReleaseTests(unittest.TestCase):
     def check(self, data):
-        return updates.check_update(lambda: data)
+        return updates.check_update(lambda: data, current="0.1.0")
 
     def test_same(self):
-        result = self.check(release("v" + VERSION))
+        result = self.check(release("v0.1.0"))
         self.assertEqual(result.status, "up_to_date")
         self.assertFalse(result.update_needed)
 
@@ -51,7 +51,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse(self.check(release("v0.0.9")).update_needed)
 
     def test_metadata_is_not_an_update(self):
-        self.assertFalse(self.check(release("v" + VERSION + "+build.2")).update_needed)
+        self.assertFalse(self.check(release("v0.1.0+build.2")).update_needed)
 
     def test_excludes_draft_and_prerelease(self):
         for data in (release("v9.0.0", draft=True), release("v9.0.0", prerelease=True), release("v9.0.0-rc.1")):
