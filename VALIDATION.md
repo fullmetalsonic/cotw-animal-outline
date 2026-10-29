@@ -1,4 +1,66 @@
-# Validation — v0.4.1 release
+# Validation
+
+## v0.4.3 — release validation and gameplay observations
+
+Checked 2026-10-30. These results describe the v0.4.3 release build.
+
+### Hellhound
+
+- **PASS — user gameplay confirmation:** The user confirmed that a class 5 carcass was brought to the end and the normal `E` harvest screen opened. Do not read this as a full harvest or as a test of every class.
+- **PASS — runtime capture:** Class 5 (45.019866 kg, 26 physical bodies, head body 21) completed 310 transport steps with 8,060 body updates. Class 6 (216.353 kg, 31 physical bodies, head body 24) completed an additional 260 steps with 8,060 body updates; the run ended at phase 0 with two releases recorded. Total body updates were 16,120 and head updates 570. Mass remained unchanged in both captures.
+- **PASS — implementation boundaries:** Classes 2–9 use the original corpse ragdoll and a shared bounded XYZ delta for every valid mapped physical body, preserving each body's rotation, relative pose, velocity, and terrain contact while excluding other obstacle contacts only for that body. Head selection uses case-insensitive Head/Skull/Neck tokens after a separator and a valid body mapping; there are no species, prefix, or index hardcodes. Class 1 and normal E/reward behavior remain native. OFF, arrival, cancellation, identity change, and expiry release the temporary behavior.
+- **NOT RUN:** Separate real-game arrival/cancel/OFF recovery while overlapping an obstacle, and a dedicated all-classes 2–9 gameplay sweep. The class 5 user observation and class 5/6 captures do not prove those cases.
+
+### Silencer
+
+- **PASS — user gameplay confirmation:** On an AR15 .300 rifle, the user confirmed bow firing/impact audio and original reload audio.
+- **PASS — runtime capture:** Two shots recorded two firing replacements, two impact replacements, and suppression of two separate firing tails; API errors and native-audio fallbacks were both zero. The supported mapping covers 137 weapons: 70 rifles, 20 handguns, 28 shotguns, and 19 archery weapons. The three separate rifle/revolver/shotgun tail events are skipped only when Silencer is ON. Instance creation calls the original create once; playback with Silencer OFF or for non-target events calls the original start once.
+- Reload, magazine, firing foley, pet breathing, ballistics, and metadata remain on their original paths. AI fire/impact calculations use the native longbow profile. Original source-event distance and parameter defaults remain, so exact audible-volume equivalence is not claimed.
+- **NOT RUN:** Listening tests for other weapons and actual animal reactions. Ninja scent suppression's animal response also remains unverified.
+- **UNRESOLVED — earlier compound-bow sound:** The unexpected compound-bow sound during later equipment/actions was reported before Silencer was introduced. Its cause is still unresolved; this fix does not claim to address it.
+
+### Build and interface checks
+
+- **PASS:** 139 unit tests, 24 source checks (16+5+3), and native preflights.
+- **PASS:** Hellhound native CPU checks: 19 cases. Silencer and mode integration CPU checks: 18 cases. Both assembly bundles reassemble byte-for-byte.
+- **PASS:** Korean and English hidden real-Tk controls at 490×550.
+- **PASS — final frozen executable:** Self-test passed. All 14 embedded application modules semantically match the sources, eight data files match exactly, both assembly bundles reassemble byte-for-byte, and the other four native binaries are unchanged from HEAD. Combined with 139 unit tests, 24 self-checks, and Korean/English UI checks, the release build checks passed.
+- Current executable: 13,625,676 bytes; SHA-256 `7899ffdebc6864c41e01885f2a07d335de5074aa12f4ed6c6b87f822a31ddb8d`.
+- Hellhound binary SHA-256: `1ccc9b3a0a53eac8fe07228fec3723a5823ffb89600b5eb7386f9a29ceeb3322`.
+- Silencer binary SHA-256: `a750219eae4be1744c2ed3aee8d94fd4ee46c4e862d740dbc5242cf9ea876a07`.
+
+The six modes remain independently controlled and OFF by default. Startup update checks remain nonblocking and tokenless, with manual checks, stable SemVer comparison, and no automatic download or installation. See the prior v0.4.2 section below for the earlier failed transport attempt and its then-current findings; it is historical evidence, not the current behavior description.
+
+## v0.4.2 local carry build — historical validation
+
+Checked 2026-10-30. Historical v0.4.2 iteration only: this earlier build replaced Hellhound's immediate class 2–9 relocation with mouth-following ragdoll transport. The failures below were reproduced in this prior iteration and led to the current fix. Its gameplay limits and results must not be read as the current v0.4.3 state.
+
+## v0.4.2 — previous failed implementation findings
+
+Checked 2026-10-30 during the v0.4.2 work. At that time, v0.4.1 was the published stable release. These findings describe the earlier iteration only.
+
+- **FAIL reproduced — previous transport code:** The active physical bone name `ragdoll_Head` was not recognized, rejecting a class 3 pickup. After correcting name recognition, class 3/6 registration and terrain detection succeeded, but carcasses lagged during transport and detached. The head setter's immediate result matches the requested position; this does not establish successful transport. Actual masses stayed approximately 63.85 kg and 249.35 kg.
+- **Generic bone identification:** Validate anatomical head/skull/neck tokens after name separators and a current physical-body mapping, without hardcoded species, prefixes or indices. Structural parsing of 118 internal physics assets across 86 species is distinct from verifying all exterior carry skeletons in gameplay.
+- **FAIL reproduced — missing gunshot tails:** Rifle firing and impact instances were created with the target bow GUIDs, and the firing instance successfully started, while the user still heard gunfire. Official FMOD path lookup identified a separate `weapon_tails/wpn_rifle_tail` event. Three rifle/revolver/shotgun tail events were missing from the previous substitution. Reloads, firing foley and dog breathing are separate events.
+- **PASS — corrected rifle gameplay:** Two AR15 .300 shots recorded two firing replacements, two impact replacements and two suppressed rifle tails, with no API failures or native-audio fallbacks. The user confirmed bow firing/impact sounds and original weapon reload audio. Listening tests for other weapons and actual animal hearing remain unrun.
+- **Validation limit:** NOSOUND metadata queries with missing plugins allowed establish event paths, parameters and unstarted-instance lifetime behavior, not audible success. Corrected transport, listening and E-harvest require separate gameplay results.
+
+### v0.4.2 local carry build — historical validation
+
+Checked 2026-10-30 during the v0.4.2 work. This earlier build replaced Hellhound's immediate class 2–9 relocation with mouth-following ragdoll transport. At that time, v0.4.1 was the published stable release. **Actual carcass transport and E-harvest with this build had not yet been tested.**
+
+- **PASS — build and code checks:** 131 unit tests, 24 source self-checks and frozen EXE self-checks. All 14 embedded application modules and eight data files match the source. The other five native binaries are unchanged. The combined Hellhound ASM, including both new source includes, reassembles to the exact 24,576-byte runtime bundle.
+- **PASS — native CPU boundaries:** 14 targeted x64 tests cover all classes 2–9, native class 1 behavior, pickup registration, one physical head-bone update, symmetric/self/terrain pair handling, native return-state preservation, partial installation rollback and release on OFF/cancel/identity changes. These are controlled CPU tests, not full engine physics.
+- **PASS — installed data and live reads:** The supported EXE and 16 function preimages match. All 86 class 2–9 species in the inspected resource catalog have a Head/internal_skull bone name; this does not prove every active ragdoll layout. The actual Labrador has 114 animation bones, with Jaw hash `70B05DB4` present. The earlier fJaw assumption was rejected by the live data.
+- **PASS — terrain identity:** The current world's typed terrain owner and its complete collision filter match 64 static terrain bodies. Other static object groups differ. The runtime predicate resolves the current owner and complete filter; it does not hardcode the observed world's group ID or guess terrain from a shape name.
+- **PASS — real-game idle smoke:** With no fetch command and no active carried corpse, the new dog-tick path ran 330 more times and the native collision-filter path 41 more times over 12 seconds. OFF returned phase 0, the game remained alive and no errors were recorded. No screen, keyboard or mouse automation was used. This proves idle execution and expiry, not transport.
+- **PASS — native contracts:** The head setter explicitly returns AL=1/0 for valid/invalid mapping. Contact invalidation includes a sleeping-island wake queue. The code waits for a real terrain pair and native carrying state; missing prerequisites produce a reason code and cleanup rather than player-front teleportation.
+- **PASS — UI:** Updated Korean/English help and all master/individual controls were exercised in hidden real-Tk windows at 490×550.
+- **NOT RUN — carcass gameplay:** Ground dragging, visible limp posture, arrival/cancellation/OFF with a corpse, E-harvest, and collision restoration while overlapping an obstacle still need a real class 2+ specimen. No dead animal was present in the observed scene. Zeroing velocities does not establish that obstacle-overlap release is stable.
+
+EXE: 13,623,471 bytes, SHA-256 `9d6dcbe24262b42a81cc8da4f5a7433d76bb3fb0803aefa73c94c1eb79255abd`. Hellhound runtime bundle SHA-256: `9e78b23ef221603a58238d4ec4d7db4b97d9ab178c29017caba70c254c246d3e`.
+
+## v0.4.1 release — previous validation
 
 Checked 2026-10-29. v0.4.1 adds player scent suppression to the existing Ninja switch. The tested executable is the one included in the v0.4.1 release.
 

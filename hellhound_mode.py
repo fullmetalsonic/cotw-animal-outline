@@ -1,11 +1,10 @@
-"""Leased local Retriever eligibility and native whole-corpse relocation.
+"""Leased local Retriever carry using the original corpse and native physics.
 
-Native pickup always runs once; only a validated dead class2..9 is relocated.
+Native pickup always runs once; only a validated dead class2..9 can be carried.
 Actual animal class, health, weight, rewards and save fields are untouched.
 """
 from contextlib import ExitStack
 import hashlib
-import math
 from pathlib import Path
 import struct
 import threading
@@ -21,11 +20,20 @@ ORIGINAL_GATE = bytes.fromhex("488b4228807861010f8526030000")
 PICKUP_CALL_RVA, PICKUP_FUNCTION_RVA = 0x6CB25F, 0x6BDDB0
 ORIGINAL_PICKUP_CALL = bytes.fromhex("e84c2bffff")
 CHAR_SETTER_RVA, RAGDOLL_SETTER_RVA, CHAR_INTERFACE_RVA = 0x6A47E0, 0x334F80, 0x1A601A0
+TICK_CALL_RVA, TICK_FUNCTION_RVA = 0x68B1F8, 0x6B1540
+SPEED_CALL_RVA, SPEED_FUNCTION_RVA = 0x714A0D, 0x8FB990
+PAIR_SITE_RVA, PAIR_FUNCTION_RVA = 0x1FF4EA8, 0xFEFEC0
+ORIGINAL_TICK_CALL, ORIGINAL_SPEED_CALL = bytes.fromhex("e843630200"), bytes.fromhex("e87e6f1e00")
+FUNCTIONS = (TICK_FUNCTION_RVA, 0x3223A0, 0x3320E0, 0xFCF7A0,
+             0x69DB70, 0x67A0B0, SPEED_FUNCTION_RVA, PAIR_FUNCTION_RVA,
+             0x1FF4E88, 0x1984248, 0x223C008, 0xFCDA50, 0x27A8320)
 JOB_VTABLE_RVA, HOST_RVA = 0x1DEF1D8, 0x27C5DB8
-CODE_SIZE, PICKUP_OFFSET, HEADER_SIZE, STATS_SIZE = 8192, 4096, 384, 160
-MAGIC = b"COTW_HELLHND_V2".ljust(16, b"\0")
+CODE_SIZE, PICKUP_OFFSET, HEADER_SIZE, STATS_SIZE = 24576, 4096, 512, 304
+TICK_OFFSET, PAIR_OFFSET, SPEED_OFFSET = 8192, 16384, 20480
+STATE_OFFSET, BODY_OFFSET, MAX_BODIES = 1024, 2048, 256
+MAGIC = b"COTW_HELLHND_V3".ljust(16, b"\0")
 LEASE_SECONDS = .30
-STUB_SHA256 = "9e1fc7ba68afbdaec1a1c8f2593f52661053682e4bc33f6cd0cf7e34e7d7cfec"
+STUB_SHA256 = "1ccc9b3a0a53eac8fe07228fec3723a5823ffb89600b5eb7386f9a29ceeb3322"
 SIGNATURES = {
     0x5DAB92: bytes.fromhex("e8a90e3200"),  # Reject leftover V1 weight hooks; never patch this site.
     0x8F1DC5: bytes.fromhex("488b1a4885db0f841a030000488bcb"),
@@ -34,11 +42,20 @@ SIGNATURES = {
     PICKUP_FUNCTION_RVA: bytes.fromhex("40534883ec60c60101498bd8410f10014c8d442420488bcb410f1049100f11442420410f1041200f114c2430410f1049300f114424400f114c2450e8b013feff4533c0488d0d96bf3a01418d5012e88d616c00488d54247089442470488bcbe8dcadfdff4883c4605bc3"),
     CHAR_SETTER_RVA: bytes.fromhex("48895c24184889742420574881ec800000000f1002488db15c220000488bda48"),
     RAGDOLL_SETTER_RVA: bytes.fromhex("405355565741564881ecb0060000488b05c3af2d024833c448898424a0060000"),
+    TICK_FUNCTION_RVA: bytes.fromhex("488bc44889581855488d68984881ec60010000"),
+    PAIR_FUNCTION_RVA: bytes.fromhex("48895c2420565741574883ec20488bd94d8bf8"),
+    0x3223A0: bytes.fromhex("4c8b49104c8bd94d63c0498b41484e63"),
+    0x3320E0: bytes.fromhex("48895c2418574881ec900000000f29b4"),
+    0xFCF7A0: bytes.fromhex("488974242089542410574883ec204863"),
+    0x69DB70: bytes.fromhex("4c8bdc565741564883ec5049c743b8fe"),
+    0x67A0B0: bytes.fromhex("48895c24084889742410574883ec208b"),
+    0xFCDA50: bytes.fromhex("48896c2418488974242089542410574883ec30"),
+    SPEED_FUNCTION_RVA: bytes.fromhex("4883ec68488b41184885c00f848a000000"),
 }
 
 
 class TransientHellhoundState(RuntimeError):
-    """Expire both hooks and wait for a fresh local Retriever job binding."""
+    """Expire the hooks and wait for a fresh local Retriever job binding."""
 
 
 class HellhoundMode(PetOutlineKeeper):
@@ -63,12 +80,21 @@ class HellhoundMode(PetOutlineKeeper):
     def _patches(self, allocation):
         gate = (rel_call(self.site, allocation)+b"\x0f\x85"
                 +struct.pack("<i", self.game.base+REJECT_RVA-(self.site+11))+b"\x90"*3)
-        return gate, rel_call(self.pickup_site, allocation+PICKUP_OFFSET)
+        return (gate, rel_call(self.pickup_site, allocation+PICKUP_OFFSET),
+                rel_call(self.game.base+TICK_CALL_RVA, allocation+TICK_OFFSET),
+                rel_call(self.game.base+SPEED_CALL_RVA, allocation+SPEED_OFFSET),
+                struct.pack("<Q", allocation+PAIR_OFFSET))
+
+    def _sites(self):
+        return ((self.site, ORIGINAL_GATE), (self.pickup_site, ORIGINAL_PICKUP_CALL),
+                (self.game.base+TICK_CALL_RVA, ORIGINAL_TICK_CALL),
+                (self.game.base+SPEED_CALL_RVA, ORIGINAL_SPEED_CALL),
+                (self.game.base+PAIR_SITE_RVA, struct.pack("<Q", self.game.base+PAIR_FUNCTION_RVA)))
 
     def _header(self):
         result = bytearray(HEADER_SIZE)
         result[:16] = MAGIC
-        struct.pack_into("<II5Q", result, 16, 2, 0, self.game.base,
+        struct.pack_into("<II5Q", result, 16, 3, 0, self.game.base,
                          self.game.base+QPC_IAT_RVA, self.game.base+PICKUP_FUNCTION_RVA,
                          self.game.base+LOCAL_RVA, self.game.base+ENTITY_RVA)
         result[128:160] = hashlib.sha256(self.code).digest()
@@ -79,6 +105,8 @@ class HellhoundMode(PetOutlineKeeper):
                          self.game.base+JOB_VTABLE_RVA, self.game.base+CHAR_SETTER_RVA)
         struct.pack_into("<2Q", result, 336, self.game.base+RAGDOLL_SETTER_RVA,
                          self.game.base+CHAR_INTERFACE_RVA)
+        struct.pack_into("<"+"Q"*len(FUNCTIONS), result, 384,
+                         *(self.game.base+rva for rva in FUNCTIONS))
         return bytes(result)
 
     def _verify_owned(self, allocation):
@@ -96,13 +124,14 @@ class HellhoundMode(PetOutlineKeeper):
         for rva, expected in SIGNATURES.items():
             if self.api.read(self.game.base+rva, len(expected)) != expected:
                 raise RuntimeError("헬하운드 코드가 검증된 버전과 다릅니다")
-        gate = self.api.read(self.site, len(ORIGINAL_GATE))
-        pickup = self.api.read(self.pickup_site, 5)
-        if gate == ORIGINAL_GATE and pickup == ORIGINAL_PICKUP_CALL:
+        sites = self._sites()
+        current = tuple(self.api.read(site, len(original)) for site, original in sites)
+        gate = current[0]
+        if current == tuple(original for _, original in sites):
             return None
         if gate[:1] == b"\xe8":
             allocation = self.site+5+struct.unpack("<i", gate[1:5])[0]
-            if (gate, pickup) == self._patches(allocation):
+            if current == self._patches(allocation):
                 self._verify_owned(allocation)
                 return allocation
         raise RuntimeError("헬하운드 코드가 다른 프로그램에 의해 변경되었습니다")
@@ -119,12 +148,13 @@ class HellhoundMode(PetOutlineKeeper):
         patches = self._patches(allocation)  # Both relative calls must be in range.
         self.api.write(allocation, self.code)
         self.api.write(allocation+CODE_SIZE, self._header()+bytes(STATS_SIZE))
+        self.api.write(allocation+CODE_SIZE+STATE_OFFSET,
+                       bytes(BODY_OFFSET+MAX_BODIES*32-STATE_OFFSET))
         self._verify_owned(allocation)
         self.api.protect(allocation, CODE_SIZE, 0x20)
         self.api.flush(allocation, CODE_SIZE)
-        sites = ((self.site, ORIGINAL_GATE, patches[0]),
-                 (self.pickup_site, ORIGINAL_PICKUP_CALL, patches[1]))
-        # Nested suspension counts keep every thread paused while both sites
+        sites = tuple((site, original, patch) for (site, original), patch in zip(self._sites(), patches))
+        # Nested suspension counts keep every thread paused while all sites
         # are checked, patched or rolled back; each scope resumes its own count.
         with ExitStack() as stack:
             for site, original, _ in sites:
@@ -199,7 +229,8 @@ class HellhoundMode(PetOutlineKeeper):
             self.api.write(header+72, struct.pack("<7Q", *primary))
             self.api.write(header+256, struct.pack("<8Q", *pet))
             self.api.write(header+320, struct.pack("<2Q", *job))
-            self.api.write(header+352, struct.pack("<3fI", *binding["destination"], 1) if binding else bytes(16))
+            if binding:
+                self.api.write(header+352, struct.pack("<2Q", binding["frequency"], binding["frequency"]//4))
             self.api.write(header+64, struct.pack("<Q", self.sequence))
         except Exception:
             try:
@@ -218,8 +249,8 @@ class HellhoundMode(PetOutlineKeeper):
                     binding = self._binding()
                 elif owned != self.allocation:
                     raise RuntimeError("헬하운드 호출 코드가 바뀌었습니다")
-                binding["destination"] = self._destination(binding)
                 now, frequency = self.api.clock()
+                binding["frequency"] = frequency
                 self._publish(binding, now+int(LEASE_SECONDS*frequency))
                 self.last_binding = binding
                 return 1
@@ -245,31 +276,33 @@ class HellhoundMode(PetOutlineKeeper):
     def close(self):
         self.disable()  # Executable memory remains valid until game exit.
 
-    def _destination(self, binding):
-        matrix = struct.unpack("<16f", self.api.read(binding["character"]+0x2264, 64))
-        if (not all(math.isfinite(v) and abs(v) < 1e7 for v in matrix)
-                or any(abs(matrix[i]) > .001 for i in (3, 7, 11)) or abs(matrix[15]-1) > .001):
-            raise TransientHellhoundState("플레이어 위치 갱신을 기다리고 있습니다")
-        x, z = matrix[8], matrix[10]  # Native +Z basis; translation is row4.
-        length = math.hypot(x, z)
-        if not .1 < length < 2:
-            raise TransientHellhoundState("플레이어 방향 갱신을 기다리고 있습니다")
-        destination = (matrix[12]+3*x/length, matrix[13]+.35, matrix[14]+3*z/length)
-        if not all(math.isfinite(v) and abs(v) < 1e7 for v in destination):
-            raise TransientHellhoundState("회수 위치가 유효하지 않습니다")
-        return destination
-
     def read_stats(self):
         with self.lock:
             if self.allocation is None:
                 return dict(gate_total=0, gate_extended=0, gate_default=0,
-                            teleport_total=0, teleport_success=0, teleport_fallback=0)
+                            pickup_total=0, carry_registered=0, carry_fallback=0, phase=0,
+                            tick_total=0, pair_total=0, head_updates=0, release_total=0)
             raw = self.api.read(self.allocation+CODE_SIZE+HEADER_SIZE, STATS_SIZE)
-            result = dict(zip(("gate_total", "gate_extended", "gate_default", "teleport_total",
-                               "teleport_success", "teleport_fallback", "last_class", "wrapper", "job"),
+            result = dict(zip(("gate_total", "gate_extended", "gate_default", "pickup_total",
+                               "carry_registered", "carry_fallback", "last_class", "wrapper", "job"),
                               struct.unpack_from("<9Q", raw)))
             result["mass_before"], result["mass_after"] = struct.unpack_from("<2f", raw, 72)
             result["destination"] = struct.unpack_from("<3f", raw, 80)
             result["character_post"] = struct.unpack_from("<3f", raw, 96)
             result["last_target"], result["qpc"], result["sequence"] = struct.unpack_from("<3Q", raw, 112)
+            result["phase"] = self._u32(self.allocation+CODE_SIZE+STATE_OFFSET)
+            result["floor_seen"] = self._u32(self.allocation+CODE_SIZE+STATE_OFFSET+124)
+            result["reason"] = self._u32(self.allocation+CODE_SIZE+STATE_OFFSET+144)
+            result["body_count"] = self._u32(self.allocation+CODE_SIZE+STATE_OFFSET+96)
+            result["head_bone"] = self._u32(self.allocation+CODE_SIZE+STATE_OFFSET+100)
+            result["cancel_detail"] = self._u32(self.allocation+CODE_SIZE+STATE_OFFSET+184)
+            result["head_distance_squared"] = struct.unpack("<f", self.api.read(self.allocation+CODE_SIZE+STATE_OFFSET+188, 4))[0]
+            result["anchor_jump_squared"] = struct.unpack_from("<f", raw, 200)[0]
+            result["tick_delta"] = struct.unpack_from("<Q", raw, 208)[0]
+            result["body_updates"] = struct.unpack_from("<Q", raw, 192)[0]
+            result["binding_skips"] = struct.unpack_from("<Q", raw, 216)[0]
+            for name, offset in (("head_before", 224), ("head_desired", 240), ("head_after", 256), ("jaw_anchor", 272)):
+                result[name] = struct.unpack_from("<3f", raw, offset)
+            result.update(zip(("tick_total", "pair_total", "head_updates", "release_total"),
+                              struct.unpack_from("<4Q", raw, 160)))
             return result

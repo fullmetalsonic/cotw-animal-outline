@@ -18,11 +18,12 @@ class FakeAPI(BaseAPI):
     def __init__(self):
         super().__init__()
         for rva, raw in m.SIGNATURES.items():self.put(self.base + rva, raw)
-        self.put(self.base + m.CALL_RVA, m.ORIGINAL_CALL)
+        for rva,raw in zip((m.CALL_RVA,m.START_RVA),m.ORIGINAL_CALLS):self.put(self.base+rva,raw)
 
     def write(self, address, data):
         self.events.append(('write', address, len(data)))
-        if address == self.base + m.CALL_RVA and self.failure == 'audio_partial':
+        if ((address == self.base + m.CALL_RVA and self.failure == 'audio_partial')
+                or (address == self.base+m.START_RVA and self.failure == 'start_partial')):
             self.failure = None
             self.put(address, data[:2])
             raise OSError('partial audio patch')
@@ -34,7 +35,8 @@ class FakeAPI(BaseAPI):
 
     def flush(self, address, size):
         self.events.append(('flush', address))
-        if address == self.base + m.CALL_RVA and self.failure == 'audio_flush':
+        if ((address == self.base + m.CALL_RVA and self.failure == 'audio_flush')
+                or (address == self.base+m.START_RVA and self.failure == 'start_flush')):
             self.failure = None
             raise OSError('audio flush')
 
@@ -83,16 +85,16 @@ class AudioModeTests(unittest.TestCase):
 
     def test_partial_patch_flush_and_thread_context_rollback_before_resume(self):
         for uninstall in (False, True):
-            for failure in ('audio_partial', 'audio_flush', 'context'):
+            for failure in ('audio_partial', 'audio_flush', 'start_partial', 'start_flush', 'context'):
                 with self.subTest(uninstall=uninstall, failure=failure):
                     api = FakeAPI()
                     o = m.SilencerAudioMode(fixture(api), 1, api=api)
                     if uninstall:o.install()
-                    before = api.read(o.site, 5)
+                    before = tuple(api.read(site,5) for site in o.sites)
                     api.failure = failure
                     with self.assertRaises((OSError, RuntimeError)):
                         o.close() if uninstall else o.install()
-                    self.assertEqual(api.read(o.site, 5), before)
+                    self.assertEqual(tuple(api.read(site,5) for site in o.sites), before)
                     self.assertEqual(api.events[-1], ('resume',))
 
     def test_tamper_foreign_and_wrong_game_refused_and_failed_publish_expires(self):
@@ -135,6 +137,7 @@ class AudioModeTests(unittest.TestCase):
         wrapper, meta, manager, output = (0x200001000, 0x200002000, 0x200003000, 0x200004000)
         source_desc, studio, target_desc = 0x238C00, 0x20400, 0x345600
         uc.mem_write(wrapper + 0x18, struct.pack('<Q', meta))
+        uc.mem_write(wrapper + 0x150, struct.pack('<Q', 0x789A00))
         uc.mem_write(meta, struct.pack('<Q', source_desc))
         uc.mem_write(meta + 0x18, uuid.UUID(source).bytes_le)
         uc.mem_write(manager, struct.pack('<Q', api.base + m.MANAGER_VTABLE_RVA))
@@ -148,6 +151,8 @@ class AudioModeTests(unittest.TestCase):
         uc.mem_write(api.base + m.QPC_IAT_RVA, struct.pack('<Q', qpc))
         uc.mem_write(api.base + m.LOOKUP_RVA, b'\xc3')
         uc.mem_write(api.base + m.ORIGINAL_RVA, b'\xc3')
+        uc.mem_write(api.base + 0x15C5572, b'\xc3')
+        uc.mem_write(api.base + 0x15C5512, b'\xc3')
         if condition == 'expired':uc.mem_write(header + 72, struct.pack('<Q', 1000))
         if condition == 'odd':uc.mem_write(header + 64, struct.pack('<Q', 3))
         if condition == 'busy':uc.mem_write(header + 88, struct.pack('<Q', 1))
@@ -161,7 +166,7 @@ class AudioModeTests(unittest.TestCase):
         immutable = bytes(uc.mem_read(0x200000000, 0x10000))
         volatile = ('RAX', 'RCX', 'RDX', 'R8', 'R9', 'R10', 'R11')
         regs = volatile + ('RBX', 'RBP', 'RSI', 'RDI', 'R12', 'R13', 'R14', 'R15')
-        calls, lookups, returns, writes, qpcs = [], [], [], [], []
+        calls, lookups, returns, writes, qpcs, identities = [], [], [], [], [], []
 
         def snapshot():
             return ([uc.reg_read(getattr(x, 'UC_X86_REG_' + n)) for n in regs],
@@ -173,7 +178,8 @@ class AudioModeTests(unittest.TestCase):
             for i in range(6):uc.reg_write(getattr(x, 'UC_X86_REG_XMM' + str(i)), (seed << 64) + i)
             uc.reg_write(x.UC_X86_REG_EFLAGS, 0x246)
 
-        should_swap = source_guid is None and condition in (None, 'create_failure')
+        should_swap = source_guid is None and condition in (None, 'create_failure', 'empty_instance',
+                      'description_fail', 'description_empty', 'identity_fail', 'different_identity')
         def trace(machine, address, size, _):
             if address == o.site + 5:
                 uc.emu_stop()
@@ -204,10 +210,25 @@ class AudioModeTests(unittest.TestCase):
                 expected[0][1] = target_desc if should_swap else source_desc
                 self.assertEqual(actual, expected)
                 calls.append(address)
-                uc.mem_write(output, struct.pack('<Q', 0x567800))
+                uc.mem_write(output, struct.pack('<Q', 0 if condition == 'empty_instance' else 0x567800))
                 clobber(0xBEEF)
                 uc.reg_write(x.UC_X86_REG_RAX, 37 if condition == 'create_failure' else 0)
                 returns.append(snapshot())
+            elif address == api.base + 0x15C5572:
+                self.assertEqual(uc.reg_read(x.UC_X86_REG_RSP) % 16, 8)
+                self.assertEqual(uc.reg_read(x.UC_X86_REG_RCX), 0x567800)
+                identities.append('description')
+                uc.mem_write(uc.reg_read(x.UC_X86_REG_RDX), struct.pack('<Q', 0 if condition == 'description_empty' else target_desc))
+                clobber(0xCAFE)
+                uc.reg_write(x.UC_X86_REG_RAX, 30 if condition == 'description_fail' else 0)
+            elif address == api.base + 0x15C5512:
+                self.assertEqual(uc.reg_read(x.UC_X86_REG_RSP) % 16, 8)
+                self.assertEqual(uc.reg_read(x.UC_X86_REG_RCX), target_desc)
+                identities.append('id')
+                guid = source if condition == 'different_identity' else target
+                uc.mem_write(uc.reg_read(x.UC_X86_REG_RDX), uuid.UUID(guid).bytes_le)
+                clobber(0xFACE)
+                uc.reg_write(x.UC_X86_REG_RAX, 31 if condition == 'identity_fail' else 0)
         uc.hook_add(UC_HOOK_CODE, trace)
         uc.hook_add(UC_HOOK_MEM_WRITE, lambda machine, access, address, size, value, _:writes.append((machine.reg_read(x.UC_X86_REG_RIP), address, size)))
         uc.reg_write(x.UC_X86_REG_RSP, 0x300008000)
@@ -222,6 +243,10 @@ class AudioModeTests(unittest.TestCase):
         uc.emu_start(o.site, 0, count=7000)
         self.assertEqual(len(calls), 1)
         self.assertEqual(snapshot(), returns[0])
+        expected_identities = ([] if not should_swap or condition in ('create_failure', 'empty_instance')
+                               else ['description'] if condition in ('description_fail', 'description_empty')
+                               else ['description', 'id'])
+        self.assertEqual(identities, expected_identities)
         self.assertEqual(uc.reg_read(x.UC_X86_REG_RSP), 0x300008000)
         self.assertEqual(bytes(uc.mem_read(0x300008000, 64)), original_stack)
         after = bytearray(uc.mem_read(0x200000000, 0x10000))
@@ -251,6 +276,12 @@ class AudioModeTests(unittest.TestCase):
                 self.assertEqual(stats['failed'], 0)
                 self.assertEqual(stats['fallback'], 0)
                 self.assertEqual(stats['generation'], 2)
+                self.assertEqual(stats['actual_guid'], entry[1])
+                self.assertEqual(stats['actual_description'], 0x345600)
+                self.assertEqual(stats['last_instance'], 0x567800)
+                self.assertEqual(stats['last_wrapper'], 0x200001000)
+                self.assertEqual(stats['last_programmer_sound'], 0x789A00)
+                self.assertEqual(stats['identity_queries'], 1)
 
     def test_identity_longbow_and_arrow_impacts_and_unlisted_guids_keep_original(self):
         config = json.loads((m.ROOT / 'silencer-audio-mode-map.json').read_text(encoding='utf8'))
@@ -323,6 +354,19 @@ class AudioModeTests(unittest.TestCase):
         self.assertEqual(stats['failed'], 1)
         self.assertEqual(stats['fire_swapped'], 0)
         self.assertEqual(stats['fallback'], 0)
+        self.assertEqual(stats['identity_queries'], 0)
+
+    def test_identity_query_errors_and_mismatches_do_not_change_native_result_or_swap(self):
+        for condition in ('empty_instance', 'description_fail', 'description_empty', 'identity_fail', 'different_identity'):
+            with self.subTest(condition=condition):
+                stats, lookups = self.execute(condition=condition)
+                self.assertEqual(lookups, 1)
+                self.assertEqual(stats['fire_swapped'], 1)
+                self.assertEqual(stats['failed'], 0)
+                self.assertEqual(stats['description_error'], 30 if condition == 'description_fail' else 0)
+                self.assertEqual(stats['identity_error'], 31 if condition == 'identity_fail' else 0)
+                self.assertEqual(stats['actual_guid'], m.load_mapping()[0][0][0] if condition == 'different_identity'
+                                 else '00000000-0000-0000-0000-000000000000')
 
     def test_torn_stats_are_not_reported(self):
         api = FakeAPI()
@@ -330,6 +374,86 @@ class AudioModeTests(unittest.TestCase):
         o.install()
         api.put(o.allocation + m.CODE_SIZE + 344, struct.pack('<Q', 1))
         self.assertEqual(o.stats(), {})
+
+    def execute_start(self, guid, condition=None):
+        from unicorn import Uc, UC_ARCH_X86, UC_MODE_64, UC_HOOK_CODE, UC_HOOK_MEM_WRITE
+        from unicorn import x86_const as x
+        api=FakeAPI();o=m.SilencerAudioMode(fixture(api),1,api=api);o.install()
+        if condition!='off':o.publish()
+        uc=Uc(UC_ARCH_X86,UC_MODE_64)
+        for address,size in ((api.base,0x3000000),(o.allocation,m.ALLOCATION_SIZE),(0x200000000,0x10000),(0x300000000,0x10000)):uc.mem_map(address,size)
+        for address,value in api.memory.items():uc.mem_write(address,bytes([value]))
+        header=o.allocation+m.CODE_SIZE;wrapper,meta=0x200001000,0x200002000
+        desc,instance=0x234500,0x567800;qpc=api.base+0x1000
+        uc.mem_write(wrapper+0x18,struct.pack('<Q',meta));uc.mem_write(wrapper+0x28,struct.pack('<Q',instance))
+        uc.mem_write(meta,struct.pack('<Q',desc));uc.mem_write(meta+0x18,uuid.UUID(guid).bytes_le)
+        uc.mem_write(api.base+m.QPC_IAT_RVA,struct.pack('<Q',qpc))
+        for address in (qpc,api.base+0x15C5572,api.base+m.START_ORIGINAL_RVA):uc.mem_write(address,b'\xc3')
+        if condition=='expired':uc.mem_write(header+72,struct.pack('<Q',1000))
+        if condition=='odd':uc.mem_write(header+64,struct.pack('<Q',3))
+        if condition=='busy':uc.mem_write(header+88,struct.pack('<Q',1))
+        if condition=='instance_mismatch':uc.mem_write(wrapper+0x28,struct.pack('<Q',instance+1))
+        if condition=='missing_metadata':uc.mem_write(wrapper+0x18,bytes(8))
+        registers=('RAX','RCX','RDX','R8','R9','R10','R11','RBX','RBP','RSI','RDI','R12','R13','R14','R15')
+        volatile=registers[:7];calls=[];queries=[];qpcs=[];returns=[];writes=[]
+        def snapshot():
+            return ([uc.reg_read(getattr(x,'UC_X86_REG_'+n)) for n in registers],
+                    [uc.reg_read(getattr(x,'UC_X86_REG_XMM'+str(i))) for i in range(16)],uc.reg_read(x.UC_X86_REG_EFLAGS))
+        def clobber(result):
+            for i,n in enumerate(volatile):uc.reg_write(getattr(x,'UC_X86_REG_'+n),0xBAD000+i)
+            for i in range(6):uc.reg_write(getattr(x,'UC_X86_REG_XMM'+str(i)),0xBAD000+i)
+            uc.reg_write(x.UC_X86_REG_RAX,result);uc.reg_write(x.UC_X86_REG_EFLAGS,0x246)
+        def trace(machine,address,size,_):
+            if address==o.sites[1]+5:uc.emu_stop();return
+            if address not in (qpc,api.base+0x15C5572,api.base+m.START_ORIGINAL_RVA):return
+            self.assertEqual(uc.reg_read(x.UC_X86_REG_RSP)%16,8)
+            if address==qpc:
+                qpcs.append(address);late=len(qpcs)==2
+                uc.mem_write(uc.reg_read(x.UC_X86_REG_RCX),struct.pack('<Q',1300 if late and condition=='late_expiry' else 1000))
+                clobber(0 if condition=='qpc_fail' or late and condition=='late_qpc_fail' else 1)
+                if condition=='epoch_race' or late and condition=='late_epoch_race':uc.mem_write(header+64,struct.pack('<Q',8))
+            elif address==api.base+0x15C5572:
+                self.assertEqual(uc.reg_read(x.UC_X86_REG_RCX),instance);queries.append(address)
+                uc.mem_write(uc.reg_read(x.UC_X86_REG_RDX),struct.pack('<Q',desc+1 if condition=='description_mismatch' else desc))
+                if condition=='changed_instance':uc.mem_write(wrapper+0x28,struct.pack('<Q',instance+1))
+                if condition=='changed_metadata':uc.mem_write(wrapper+0x18,struct.pack('<Q',meta+8))
+                if condition=='changed_guid':uc.mem_write(meta+0x18,bytes(16))
+                clobber(31 if condition=='description_fail' else 0)
+            else:
+                self.assertEqual(snapshot(),before);calls.append(address);clobber(37);returns.append(snapshot())
+        uc.hook_add(UC_HOOK_CODE,trace)
+        uc.hook_add(UC_HOOK_MEM_WRITE,lambda machine,access,address,size,value,_:writes.append((address,size)))
+        for i,n in enumerate(registers):uc.reg_write(getattr(x,'UC_X86_REG_'+n),0xABC000+i)
+        uc.reg_write(x.UC_X86_REG_RCX,instance);uc.reg_write(x.UC_X86_REG_RDI,0 if condition=='missing_wrapper' else wrapper)
+        for i in range(16):uc.reg_write(getattr(x,'UC_X86_REG_XMM'+str(i)),0x123456789000+i)
+        uc.reg_write(x.UC_X86_REG_EFLAGS,0x202);uc.reg_write(x.UC_X86_REG_RSP,0x300008000)
+        before=snapshot();uc.emu_start(o.sites[1],0,count=10000)
+        suppressed=guid in m.TAIL_GUIDS and condition is None
+        self.assertEqual(len(calls),0 if suppressed else 1)
+        if suppressed:
+            expected=(before[0].copy(),before[1],before[2]);expected[0][0]=0;self.assertEqual(snapshot(),expected)
+        else:self.assertEqual(snapshot(),returns[0])
+        self.assertEqual(uc.reg_read(x.UC_X86_REG_RSP),0x300008000)
+        self.assertTrue(all(header<=a<a+n<=header+m.HEADER_SIZE or 0x300000000<=a<a+n<=0x300008000 for a,n in writes))
+        api.put(header,bytes(uc.mem_read(header,m.HEADER_SIZE)));stats=o.stats()
+        self.assertEqual(stats['start_calls'],1);self.assertEqual(stats['tails_suppressed'],int(suppressed))
+        if suppressed:self.assertEqual(stats['last_tail_guid'],guid);self.assertEqual(stats['last_tail_instance'],instance)
+        return stats,len(queries)
+
+    def test_only_three_confirmed_gun_tails_suppress_start_without_volume_or_metadata_writes(self):
+        for guid in m.TAIL_GUIDS:
+            with self.subTest(guid=guid):
+                stats,queries=self.execute_start(guid);self.assertEqual(queries,1);self.assertEqual(stats['tail_fallback'],0)
+        for guid in (m.load_mapping()[0][0][0], 'e82ceeac-b413-4e5a-a5c6-f588fcba43f8',
+                     '95e91509-ce7a-4a72-9742-2fbc4e2ce976','81076ff9-33f0-4c97-b157-452ba13581c4',
+                     '00db660a-83da-4daa-a2f9-0ae07807bbd5'):
+            self.execute_start(guid)
+
+    def test_tail_off_expiry_qpc_reentrancy_and_binding_failures_start_original_once(self):
+        for condition in ('off','expired','odd','busy','qpc_fail','epoch_race','instance_mismatch',
+                          'missing_wrapper','missing_metadata','description_fail','description_mismatch',
+                          'changed_instance','changed_metadata','changed_guid','late_expiry','late_epoch_race','late_qpc_fail'):
+            with self.subTest(condition=condition):self.execute_start(m.TAIL_GUIDS[0],condition)
 
 
 if __name__ == '__main__':unittest.main(verbosity=2)

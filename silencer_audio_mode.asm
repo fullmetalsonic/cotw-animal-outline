@@ -1,4 +1,5 @@
-; Private createInstance argument replacement. Original native call runs once.
+; Bow createInstance substitution and leased suppression of three gunshot tails.
+; Original create runs once; only validated ON tails skip the native start call.
 ; Shared game metadata and existing sound instances are never written.
 BITS 64
 ORG 0
@@ -100,6 +101,14 @@ matched:
     mov [r10+336], rax
     mov dword [r10+360], 0
     mov dword [r10+364], 0
+    mov [r10+368], rdi
+    mov rax, [rdi+0x150]
+    mov [r10+376], rax
+    mov qword [r10+384], 0
+    mov qword [r10+392], 0
+    pxor xmm0, xmm0
+    movdqu [r10+400], xmm0
+    mov qword [r10+416], 0
     inc qword [r10+352]      ; matched candidates
     mov rax, [r10+24]
     mov rcx, [rax+0x27B8D28]
@@ -229,6 +238,39 @@ native_call:
     je finish_stats
     test eax, eax
     jnz create_failed
+    ; Observe the returned instance, rather than infer its identity from create success.
+    mov rax, [rsp+0x30]
+    mov rcx, [rax]
+    mov [r10+384], rcx
+    test rcx, rcx
+    jz count_swapped
+    inc qword [r10+424]
+    mov qword [rsp+0x118], 0
+    lea rdx, [rsp+0x118]
+    mov rax, [r10+24]
+    add rax, 0x15C5572    ; EventInstance::getDescription
+    call rax
+    lea r10, [rel header]
+    mov [r10+416], eax
+    test eax, eax
+    jnz count_swapped
+    mov rcx, [rsp+0x118]
+    mov [r10+392], rcx
+    test rcx, rcx
+    jz count_swapped
+    pxor xmm0, xmm0
+    movdqu [rsp+0x120], xmm0
+    lea rdx, [rsp+0x120]
+    mov rax, [r10+24]
+    add rax, 0x15C5512    ; EventDescription::getID
+    call rax
+    lea r10, [rel header]
+    mov [r10+420], eax
+    test eax, eax
+    jnz count_swapped
+    movdqu xmm0, [rsp+0x120]
+    movdqu [r10+400], xmm0
+count_swapped:
     cmp qword [rsp+0x110], 1
     jne impact_swapped
     inc qword [r10+224]
@@ -260,6 +302,175 @@ restore_return:
     popfq
     lea rsp, [rsp+FRAME+8]
     ret
+times 2048-($-$$) db 0
+%define START_FRAME 0x100
+entry_start:
+    pushfq
+    sub rsp, START_FRAME
+    mov [rsp+0x20], rax
+    mov [rsp+0x28], rcx
+    mov [rsp+0x30], rdx
+    mov [rsp+0x38], r8
+    mov [rsp+0x40], r9
+    mov [rsp+0x48], r10
+    mov [rsp+0x50], r11
+    movdqu [rsp+0x60], xmm0
+    movdqu [rsp+0x70], xmm1
+    movdqu [rsp+0x80], xmm2
+    movdqu [rsp+0x90], xmm3
+    movdqu [rsp+0xA0], xmm4
+    movdqu [rsp+0xB0], xmm5
+    mov qword [rsp+0xF0], 0
+    lea r10, [rel header]
+    lock inc qword [r10+448]
+    mov rax, [r10+64]
+    test rax, 1
+    jnz start_pass
+    mov [rsp+0xC0], rax
+    mov rax, [r10+72]
+    test rax, rax
+    jz start_pass
+    mov [rsp+0xC8], rax
+    lea rcx, [rsp+0xD0]
+    mov rax, [r10+32]
+    call [rax]
+    test eax, eax
+    jz start_pass
+    lea r10, [rel header]
+    mov rax, [rsp+0xD0]
+    cmp rax, [rsp+0xC8]
+    jae start_pass
+    mov rax, [rsp+0xC0]
+    cmp rax, [r10+64]
+    jne start_pass
+    mov rax, rdi
+    cmp rax, 0x10000
+    jb start_pass
+    mov r11, 0x7FFFFFFFFFCF
+    cmp rax, r11
+    ja start_pass
+    mov rcx, [rsp+0x28]
+    cmp [rdi+0x28], rcx
+    jne start_pass
+    test rcx, rcx
+    jz start_pass
+    mov rdx, [rdi+0x18]
+    cmp rdx, 0x10000
+    jb start_pass
+    cmp rdx, r11
+    ja start_pass
+    mov [rsp+0xE0], rdx
+    mov r8, [rdx+0x18]
+    mov r9, [rdx+0x20]
+    lea r11, [rel tail_guids]
+    mov ecx, 3
+.find:
+    cmp r8, [r11]
+    jne .next
+    cmp r9, [r11+8]
+    je .matched
+.next:
+    add r11, 16
+    dec ecx
+    jnz .find
+    jmp start_pass
+.matched:
+    mov [rsp+0xE8], r11
+    mov eax, 1
+    xchg rax, [r10+88]
+    test rax, rax
+    jnz start_busy
+    inc qword [r10+344]
+    mov qword [rsp+0xF0], 1
+    mov qword [rsp+0xD8], 0
+    mov rcx, [rsp+0x28]
+    lea rdx, [rsp+0xD8]
+    mov rax, [r10+24]
+    add rax, 0x15C5572
+    call rax
+    test eax, eax
+    jnz start_fallback
+    mov rdx, [rsp+0xE0]
+    cmp [rdi+0x18], rdx
+    jne start_fallback
+    mov rcx, [rsp+0x28]
+    cmp [rdi+0x28], rcx
+    jne start_fallback
+    mov rax, [rsp+0xD8]
+    test rax, rax
+    jz start_fallback
+    cmp [rdx], rax
+    jne start_fallback
+    mov r11, [rsp+0xE8]
+    mov rax, [rdx+0x18]
+    cmp [r11], rax
+    jne start_fallback
+    mov rax, [rdx+0x20]
+    cmp [r11+8], rax
+    jne start_fallback
+    lea r10, [rel header]
+    lea rcx, [rsp+0xD0]
+    mov rax, [r10+32]
+    call [rax]
+    test eax, eax
+    jz start_fallback
+    lea r10, [rel header]
+    mov rax, [rsp+0xD0]
+    cmp rax, [rsp+0xC8]
+    jae start_fallback
+    mov rax, [rsp+0xC0]
+    cmp rax, [r10+64]
+    jne start_fallback
+    ; Bows have no standalone firearm tail. Keep the unstarted instance for
+    ; native STOPPED->release cleanup; do not change volume or shared metadata.
+    inc qword [r10+456]
+    mov rax, [rsp+0x28]
+    mov [r10+472], rax
+    mov r11, [rsp+0xE8]
+    movdqu xmm0, [r11]
+    movdqu [r10+480], xmm0
+    mov qword [rsp+0xF0], 2
+    jmp start_finish
+start_fallback:
+    lea r10, [rel header]
+    inc qword [r10+464]
+start_finish:
+    inc qword [r10+344]
+    mov qword [r10+88], 0
+    jmp start_pass
+start_busy:
+    lock inc qword [r10+464]
+start_pass:
+    movdqu xmm5, [rsp+0xB0]
+    movdqu xmm4, [rsp+0xA0]
+    movdqu xmm3, [rsp+0x90]
+    movdqu xmm2, [rsp+0x80]
+    movdqu xmm1, [rsp+0x70]
+    movdqu xmm0, [rsp+0x60]
+    mov rax, [rsp+0x20]
+    mov rcx, [rsp+0x28]
+    mov rdx, [rsp+0x30]
+    mov r8, [rsp+0x38]
+    mov r9, [rsp+0x40]
+    mov r10, [rsp+0x48]
+    mov r11, [rsp+0x50]
+    cmp qword [rsp+0xF0], 2
+    je start_suppressed
+    push qword [rsp+START_FRAME]
+    popfq
+    lea rsp, [rsp+START_FRAME+8]
+    jmp [rel header+432]
+start_suppressed:
+    mov eax, 0
+    push qword [rsp+START_FRAME]
+    popfq
+    lea rsp, [rsp+START_FRAME+8]
+    ret
+times 4000-($-$$) db 0
+tail_guids:
+    db 0x51,0xaa,0x0c,0x73,0x38,0x0c,0xb2,0x4d,0x80,0x87,0xc7,0x3f,0x89,0xa8,0xb2,0x89
+    db 0xa3,0xf1,0x61,0xc9,0xbb,0x8d,0x2e,0x49,0x9b,0xb7,0xfb,0x1f,0xb0,0x5a,0x1f,0xc7
+    db 0xde,0x8c,0xf5,0xc9,0x64,0xc8,0x09,0x4e,0x86,0x4c,0x8c,0x13,0x92,0xce,0xdf,0x4a
 times 4096-($-$$) db 0
 mapping_table:
     db 0xd3,0x8d,0x11,0x01,0x59,0xe0,0x55,0x4f,0xaa,0xbc,0x2d,0xc9,0x1b,0x50,0x05,0xd6,0xac,0xee,0x2c,0xe8,0x13,0xb4,0x5a,0x4e,0xa5,0xc6,0xf5,0x88,0xfc,0xba,0x43,0xf8

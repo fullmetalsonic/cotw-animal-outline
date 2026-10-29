@@ -794,7 +794,7 @@ def run_gui(color="white"):
 
     ttk.Button(hellhound_buttons, text=tr("헬하운드 ON"), command=worker.hellhound_requested.set).pack(side="left", fill="x", expand=True, padx=(0, 6))
     ttk.Button(hellhound_buttons, text=tr("헬하운드 OFF"), command=hellhound_off).pack(side="left", fill="x", expand=True)
-    hellhound_help = ttk.Label(hellhound_panel, text=tr("리트리버가 1~9등급 사체를 회수하도록 허용합니다. 원래 거리·상태 조건은 유지합니다. 큰 사체는 픽업 성공 시 플레이어 약 3m 앞에 옮깁니다. 사체를 E로 정상 수확할 수 있으며 실제 등급·무게는 바꾸지 않습니다. 리트리버 DLC와 활성 반려견이 필요합니다."), wraplength=440)
+    hellhound_help = ttk.Label(hellhound_panel, text=tr("리트리버가 1~9등급 사체를 회수합니다. 1급은 기존 동작, 2~9급은 개의 입을 따라 지면에 끌려옵니다. 운반 중에는 장애물을 통과하고, 도착·취소·OFF 때 내려놓습니다. E로 수확할 수 있으며 실제 등급·무게는 바꾸지 않습니다. 리트리버 DLC와 활성 반려견이 필요합니다."), wraplength=440)
     hellhound_help.pack(anchor="w", fill="x")
     silencer_panel = ttk.LabelFrame(panel,text=tr("소음기 모드 · 독립 ON/OFF"),padding=10)
     silencer_panel.pack(fill="x",pady=(0,10))
@@ -809,7 +809,7 @@ def run_gui(color="white"):
 
     ttk.Button(silencer_buttons,text=tr("소음기 ON"),command=worker.silencer_requested.set).pack(side="left",fill="x",expand=True,padx=(0,6))
     ttk.Button(silencer_buttons,text=tr("소음기 OFF"),command=silencer_off).pack(side="left",fill="x",expand=True)
-    silencer_help = ttk.Label(silencer_panel,text=tr("모든 무기의 발사음은 롱보우, 탄착음은 활 소리로 바꿉니다. 사냥감의 발사·탄착 소음 계산도 롱보우 기준으로 적용합니다. 탄도·피해·탄약과 장전 소리는 유지합니다. OFF에서는 원래 소리와 계산으로 돌아갑니다."),wraplength=440)
+    silencer_help = ttk.Label(silencer_panel,text=tr("모든 무기의 발사음은 롱보우, 탄착음은 활 소리로 바꾸고 총기 발사 반향은 차단합니다. 사냥감의 발사·탄착 소음 계산도 롱보우 기준으로 적용합니다. 탄도·피해·탄약과 장전 소리는 유지합니다. OFF에서는 원래 소리와 계산으로 돌아갑니다."),wraplength=440)
     silencer_help.pack(anchor="w",fill="x")
     updates_panel = ttk.LabelFrame(panel, text=tr("업데이트"), padding=9)
     updates_panel.pack(fill="x", pady=(3, 0))

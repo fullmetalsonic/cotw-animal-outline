@@ -1,6 +1,7 @@
-; Eligibility and native pickup wrapper share one seqlock/finite lease.
-; No body weight/class/health or save fields are written.
+; Eligibility, original pickup, native dog tick, speed and collision filtering.
+; No body weight/class/health, reward or save fields are written.
 ; shortcut: no dynamic unwind registration, matching the existing native hooks.
+%define STATS 512
 BITS 64
 ORG 0
 %define FRAME 0x128
@@ -42,9 +43,9 @@ ORG 0
 %macro CHECK_BINDING 2
     lea r10, [rel header]
     mov r11, [r10+64]
+    mov [rsp+0xC0], r11
     test r11, 1
     jnz %1
-    mov [rsp+0xC0], r11
     mov rax, [r10+72]
     test rax, rax
     jz %1
@@ -234,10 +235,10 @@ ORG 0
     test edx, 0x80000000
     jz %1
 %%dead:
-    mov [r10+432], rcx
-    mov [r10+440], rax
+    mov [r10+STATS+48], rcx
+    mov [r10+STATS+56], rax
     mov rax, [rsp+0xE8]
-    mov [r10+448], rax
+    mov [r10+STATS+64], rax
 %endmacro
 entry:
     mov rax, [rdx+0x28]      ; exact original MOV, including its RAX effect
@@ -245,28 +246,28 @@ entry:
     mov [rsp+0xE0], rdx
     mov [rsp+0xE8], rdi
     lea r10, [rel header]
-    lock inc qword [r10+384]
+    lock inc qword [r10+STATS+0]
     cmp byte [rax+0x61], 1   ; class 1 always follows the original comparison
     je gate_default
     CHECK_BINDING gate_default, gate_valid
  gate_valid:
     DEAD_EXTENDED_CLASS gate_default
-    lock inc qword [r10+392]
+    lock inc qword [r10+STATS+8]
     mov rax, [rsp+0xD0]
-    mov [r10+504], rax
-    mov [r10+512], r11
+    mov [r10+STATS+120], rax
+    mov [r10+STATS+128], r11
     RESTORE
     cmp eax, eax            ; extension affects comparison flags only (ZF=1)
     ret
  gate_default:
     lea r10, [rel header]
-    lock inc qword [r10+400]
+    lock inc qword [r10+STATS+16]
     RESTORE
     cmp byte [rax+0x61], 1  ; exact native flags after stack restoration
     ret
  times 4096-($-$$) db 0
-%define PICKUP_FRAME 0x2E0
-pickup_entry:
+%define PICKUP_FRAME 0x500
+%macro NATIVE_START 1
     pushfq
     sub rsp, PICKUP_FRAME
     mov [rsp+0x28], rcx
@@ -275,7 +276,7 @@ pickup_entry:
     mov [rsp+0x40], r9
     push qword [rsp+PICKUP_FRAME]
     popfq
-    call [rel header+40]   ; Original always exactly once, no stack arguments.
+    call [rel header+%1]   ; Original always exactly once, no stack arguments.
     mov [rsp+0x100], rax
     mov [rsp+0x108], rcx
     mov [rsp+0x110], rdx
@@ -309,8 +310,48 @@ pickup_entry:
     movdqu [rsp+0x270], xmm15
     pushfq
     pop qword [rsp+0x280]
+%endmacro
+%macro NATIVE_END 0
+    movdqu xmm0, [rsp+0x180]
+    movdqu xmm1, [rsp+0x190]
+    movdqu xmm2, [rsp+0x1A0]
+    movdqu xmm3, [rsp+0x1B0]
+    movdqu xmm4, [rsp+0x1C0]
+    movdqu xmm5, [rsp+0x1D0]
+    movdqu xmm6, [rsp+0x1E0]
+    movdqu xmm7, [rsp+0x1F0]
+    movdqu xmm8, [rsp+0x200]
+    movdqu xmm9, [rsp+0x210]
+    movdqu xmm10, [rsp+0x220]
+    movdqu xmm11, [rsp+0x230]
+    movdqu xmm12, [rsp+0x240]
+    movdqu xmm13, [rsp+0x250]
+    movdqu xmm14, [rsp+0x260]
+    movdqu xmm15, [rsp+0x270]
+    mov rax, [rsp+0x100]
+    mov rcx, [rsp+0x108]
+    mov rdx, [rsp+0x110]
+    mov r8, [rsp+0x118]
+    mov r9, [rsp+0x120]
+    mov r10, [rsp+0x128]
+    mov r11, [rsp+0x130]
+    mov rbx, [rsp+0x138]
+    mov rbp, [rsp+0x140]
+    mov rsi, [rsp+0x148]
+    mov rdi, [rsp+0x150]
+    mov r12, [rsp+0x158]
+    mov r13, [rsp+0x160]
+    mov r14, [rsp+0x168]
+    mov r15, [rsp+0x170]
+    push qword [rsp+0x280]
+    popfq
+    lea rsp, [rsp+PICKUP_FRAME+8]
+    ret
+%endmacro
+pickup_entry:
+    NATIVE_START 40
     lea r10, [rel header]
-    lock inc qword [r10+408]
+    lock inc qword [r10+STATS+24]
     mov rcx, [rsp+0x28]
     cmp byte [rcx], 1
     jne pickup_default
@@ -427,106 +468,29 @@ pickup_valid:
     jz pickup_default
     cmp eax, 256
     ja pickup_default
-    ; Copy the native target pose. Only the local matrix translation changes.
-    xor ecx, ecx
-pose_loop:
-    mov eax, [r9+rcx*4+0x2264]
-    mov edx, eax
-    and edx, 0x7FFFFFFF
-    cmp edx, 0x4B189680      ; finite and abs < 10,000,000
-    jae pickup_default
-    mov [rsp+rcx*4+0x290], eax
-    inc ecx
-    cmp ecx, 16
-    jb pose_loop
-    cmp dword [rsp+0x2CC], 0x3F800000
-    jne pickup_default
-    cmp dword [r10+364], 1
-    jne pickup_default
-    xor ecx, ecx
-dest_loop:
-    mov eax, [r10+rcx*4+352]
-    mov edx, eax
-    and edx, 0x7FFFFFFF
-    cmp edx, 0x4B189680
-    jae pickup_default
-    mov [rsp+rcx*4+0x2C0], eax
-    mov [r10+rcx*4+464], eax
-    inc ecx
-    cmp ecx, 3
-    jb dest_loop
-    mov r11, [rsp+0xC0]
-    cmp r11, [r10+64]
-    jne pickup_default
-    mov rax, [rsp+0xE0]
-    mov eax, [rax+0x19C]
-    mov [r10+456], eax
-    mov [r10+496], r9
+    mov r12, [rsp+0x38]
+    mov r13, [rsp+0x30]
+    mov r14, [rsp+0xE8]
+    mov r15, [rsp+0xE0]
+    mov eax, [r15+0x19C]
+    mov [r10+STATS+72], eax
+    mov [r10+STATS+76], eax
+    mov [r10+STATS+112], r12
     mov rax, [rsp+0xD0]
-    mov [r10+504], rax
-    mov [r10+512], r11
-    lea rcx, [r9+8]
-    lea rdx, [rsp+0x290]
-    call [rel header+248]
-    mov rcx, [rsp+0x2D8]
-    lea rdx, [rsp+0x290]
-    xor r8d, r8d
-    xor r9d, r9d
-    call [rel header+336]
+    call register_carry
+    test eax, eax
+    jz pickup_default
     lea r10, [rel header]
-    mov rax, [rsp+0xE0]
-    mov eax, [rax+0x19C]
-    mov [r10+460], eax
-    mov r9, [rsp+0x38]
-    xor ecx, ecx
-post_loop:
-    mov eax, [r9+rcx*4+0x2294]
-    mov [r10+rcx*4+480], eax
-    cmp eax, [rsp+rcx*4+0x2C0]
-    jne pickup_default
-    inc ecx
-    cmp ecx, 3
-    jb post_loop
-    lock inc qword [r10+416]
+    lock inc qword [r10+STATS+32]
     jmp pickup_restore
 pickup_default:
     lea r10, [rel header]
-    lock inc qword [r10+424]
+    lock inc qword [r10+STATS+40]
 pickup_restore:
-    movdqu xmm0, [rsp+0x180]
-    movdqu xmm1, [rsp+0x190]
-    movdqu xmm2, [rsp+0x1A0]
-    movdqu xmm3, [rsp+0x1B0]
-    movdqu xmm4, [rsp+0x1C0]
-    movdqu xmm5, [rsp+0x1D0]
-    movdqu xmm6, [rsp+0x1E0]
-    movdqu xmm7, [rsp+0x1F0]
-    movdqu xmm8, [rsp+0x200]
-    movdqu xmm9, [rsp+0x210]
-    movdqu xmm10, [rsp+0x220]
-    movdqu xmm11, [rsp+0x230]
-    movdqu xmm12, [rsp+0x240]
-    movdqu xmm13, [rsp+0x250]
-    movdqu xmm14, [rsp+0x260]
-    movdqu xmm15, [rsp+0x270]
-    mov rax, [rsp+0x100]
-    mov rcx, [rsp+0x108]
-    mov rdx, [rsp+0x110]
-    mov r8, [rsp+0x118]
-    mov r9, [rsp+0x120]
-    mov r10, [rsp+0x128]
-    mov r11, [rsp+0x130]
-    mov rbx, [rsp+0x138]
-    mov rbp, [rsp+0x140]
-    mov rsi, [rsp+0x148]
-    mov rdi, [rsp+0x150]
-    mov r12, [rsp+0x158]
-    mov r13, [rsp+0x160]
-    mov r14, [rsp+0x168]
-    mov r15, [rsp+0x170]
-    push qword [rsp+0x280]
-    popfq
-    lea rsp, [rsp+PICKUP_FRAME+8]
-    ret
+    NATIVE_END
  times 8192-($-$$) db 0
+%include "hellhound_carry.asm"
+ times 16384-($-$$) db 0
+%include "hellhound_filter.asm"
+ times 24576-($-$$) db 0
 header:
