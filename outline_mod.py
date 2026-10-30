@@ -15,6 +15,7 @@ from i18n import LANGUAGE,tr
 from ninja_mode import TransientNinjaState
 from pet_outline import TransientPetState
 from hellhound_mode import TransientHellhoundState
+from mad_max_speed import TransientMadMaxState
 from update_check import UpdateResult, check_update, is_release_url
 
 OUTLINE_OFFSET = 0x2468
@@ -114,6 +115,8 @@ class LiveBackend:
         self.hellhound_writer = None
         self.silencer_mode = None
         self.silencer_writer = None
+        self.mad_max_mode = None
+        self.mad_max_writer = None
 
     def set_color(self, color):
         if color not in PAYLOADS:
@@ -316,6 +319,25 @@ class LiveBackend:
         if self.silencer_mode:
             self.silencer_mode.disable()
 
+    def refresh_mad_max(self):
+        if self.mad_max_mode is None:
+            from mad_max_speed import MadMaxSpeedMode
+            self.check()
+            self.mad_max_writer = K.OpenProcess(0x438, False, self.game.pid)
+            if not self.mad_max_writer:
+                raise RuntimeError("매드맥스를 위한 게임 프로세스 접근 권한을 얻지 못했습니다")
+            try:
+                self.mad_max_mode = MadMaxSpeedMode(self.game, self.mad_max_writer)
+            except Exception:
+                K.CloseHandle(self.mad_max_writer)
+                self.mad_max_writer = None
+                raise
+        self.mad_max_mode.publish()
+
+    def stop_mad_max(self):
+        if self.mad_max_mode:
+            self.mad_max_mode.disable()
+
     def close(self):
         try:
             if self.corpse_renderer:
@@ -337,13 +359,17 @@ class LiveBackend:
                             if self.silencer_mode:
                                 self.silencer_mode.close()
                         finally:
-                            for name in ("corpse_writer", "ninja_writer", "pet_writer", "hellhound_writer", "silencer_writer"):
-                                handle = getattr(self, name)
-                                if handle:
-                                    K.CloseHandle(handle)
-                                    setattr(self, name, None)
-                            self.stop_writing()
-                            self.game.close()
+                            try:
+                                if self.mad_max_mode:
+                                    self.mad_max_mode.close()
+                            finally:
+                                for name in ("corpse_writer", "ninja_writer", "pet_writer", "hellhound_writer", "silencer_writer", "mad_max_writer"):
+                                    handle = getattr(self, name)
+                                    if handle:
+                                        K.CloseHandle(handle)
+                                        setattr(self, name, None)
+                                self.stop_writing()
+                                self.game.close()
 
 
 class RefreshController:
@@ -410,6 +436,7 @@ class ModWorker(threading.Thread):
         self.pet_requested = threading.Event()
         self.hellhound_requested = threading.Event()
         self.silencer_requested = threading.Event()
+        self.mad_max_requested = threading.Event()
         self.stopping = threading.Event()
         self.messages = queue.Queue()
         self.controller = RefreshController()
@@ -425,6 +452,7 @@ class ModWorker(threading.Thread):
         self.pet_off()
         self.hellhound_off()
         self.silencer_off()
+        self.mad_max_off()
         self.stopping.set()
 
     def ninja_off(self):
@@ -439,9 +467,12 @@ class ModWorker(threading.Thread):
     def silencer_off(self):
         self.silencer_requested.clear()
 
+    def mad_max_off(self):
+        self.mad_max_requested.clear()
+
     def selections(self):
         return (self.requested,self.corpse_requested,self.ninja_requested,self.pet_requested,
-                self.hellhound_requested,self.silencer_requested)
+                self.hellhound_requested,self.silencer_requested,self.mad_max_requested)
 
     def all_on(self):
         if not self.stopping.is_set():
@@ -497,9 +528,12 @@ class ModWorker(threading.Thread):
                         backend.stop_hellhound()
                     if not self.silencer_requested.is_set():
                         backend.stop_silencer()
+                    if not self.mad_max_requested.is_set():
+                        backend.stop_mad_max()
                     active = (self.requested.is_set() or self.corpse_requested.is_set()
                               or self.ninja_requested.is_set() or self.pet_requested.is_set()
-                              or self.hellhound_requested.is_set() or self.silencer_requested.is_set())
+                              or self.hellhound_requested.is_set() or self.silencer_requested.is_set()
+                              or self.mad_max_requested.is_set())
                     if active or time.monotonic() - last_poll >= 1:
                         rows, context, summary = backend.snapshot()
                         count = sum(backend.eligible(row) for row in rows)
@@ -560,6 +594,16 @@ class ModWorker(threading.Thread):
                             if not self.silencer_requested.is_set():
                                 backend.stop_silencer()
                                 silencer_state = "소음기 OFF"
+                        mad_max_state = "매드맥스 OFF"
+                        if self.mad_max_requested.is_set():
+                            mad_max_state = "매드맥스 ON · 속도·구동력 2배"
+                            try:
+                                backend.refresh_mad_max()
+                            except TransientMadMaxState:
+                                mad_max_state = "매드맥스 ON · 탈것 대기"
+                            if not self.mad_max_requested.is_set():
+                                backend.stop_mad_max()
+                                mad_max_state = "매드맥스 OFF"
                         if active:
                             last_error = None
                         live_on = self.requested.is_set() and self.controller.enabled
@@ -567,12 +611,13 @@ class ModWorker(threading.Thread):
                                   else last_error or "살아 있는 사냥감의 윤곽 갱신이 중지되었습니다.")
                         self.messages.put(("모드 ON" if live_on else "연결됨 · 모드 OFF", count, detail,
                                            "사체 ON" if self.corpse_requested.is_set() else "사체 OFF", corpse_count,
-                                           ninja_state, pet_state, hellhound_state, silencer_state))
+                                           ninja_state, pet_state, hellhound_state, silencer_state, mad_max_state))
                         last_poll = time.monotonic()
                 except Exception as error:
                     was_on = (self.requested.is_set() or self.controller.enabled or self.corpse_requested.is_set()
                               or self.ninja_requested.is_set() or self.pet_requested.is_set()
-                              or self.hellhound_requested.is_set() or self.silencer_requested.is_set())
+                              or self.hellhound_requested.is_set() or self.silencer_requested.is_set()
+                              or self.mad_max_requested.is_set())
                     if was_on:
                         last_error = str(error)
                     self.off()
@@ -581,6 +626,7 @@ class ModWorker(threading.Thread):
                     self.pet_off()
                     self.hellhound_off()
                     self.silencer_off()
+                    self.mad_max_off()
                     if backend:
                         try:
                             backend.close()
@@ -590,7 +636,7 @@ class ModWorker(threading.Thread):
                             pass
                         finally:
                             backend = None
-                    self.messages.put(("오류 · 모드 OFF" if was_on else "게임 연결 대기 · 모드 OFF", 0, str(error), "사체 OFF", 0, "닌자 OFF", "반려견 윤곽 OFF", "헬하운드 OFF", "소음기 OFF"))
+                    self.messages.put(("오류 · 모드 OFF" if was_on else "게임 연결 대기 · 모드 OFF", 0, str(error), "사체 OFF", 0, "닌자 OFF", "반려견 윤곽 OFF", "헬하운드 OFF", "소음기 OFF", "매드맥스 OFF"))
                     self.stopping.wait(1)
                 self.stopping.wait(INTERVAL)
         finally:
@@ -660,7 +706,7 @@ def run_gui(color="white"):
     ttk.Label(panel, text=tr("대상 빌드: 26051119 · 싱글플레이 전용")).pack(anchor="w", pady=(5, 18))
     master_panel = ttk.LabelFrame(panel,text=tr("전체 모드"),padding=10)
     master_panel.pack(fill="x",pady=(0,12))
-    master_status = LocalizedStringVar(value="전체 OFF · 0/6")
+    master_status = LocalizedStringVar(value=f"전체 OFF · 0/{len(worker.selections())}")
     ttk.Label(master_panel,textvariable=master_status).pack(anchor="w")
     master_buttons = ttk.Frame(master_panel)
     master_buttons.pack(fill="x",pady=(6,4))
@@ -811,6 +857,21 @@ def run_gui(color="white"):
     ttk.Button(silencer_buttons,text=tr("소음기 OFF"),command=silencer_off).pack(side="left",fill="x",expand=True)
     silencer_help = ttk.Label(silencer_panel,text=tr("모든 무기의 발사음은 롱보우, 탄착음은 활 소리로 바꾸고 총기 발사 반향은 차단합니다. 사냥감의 발사·탄착 소음 계산도 롱보우 기준으로 적용합니다. 탄도·피해·탄약과 장전 소리는 유지합니다. OFF에서는 원래 소리와 계산으로 돌아갑니다."),wraplength=440)
     silencer_help.pack(anchor="w",fill="x")
+    mad_max_panel = ttk.LabelFrame(panel, text=tr("매드맥스 모드 · 독립 ON/OFF"), padding=10)
+    mad_max_panel.pack(fill="x", pady=(0, 10))
+    mad_max_status = LocalizedStringVar(value="매드맥스 OFF")
+    ttk.Label(mad_max_panel, textvariable=mad_max_status).pack(anchor="w", pady=(0, 7))
+    mad_max_buttons = ttk.Frame(mad_max_panel)
+    mad_max_buttons.pack(fill="x", pady=(0, 8))
+
+    def mad_max_off():
+        worker.mad_max_off()
+        mad_max_status.set("매드맥스 OFF")
+
+    ttk.Button(mad_max_buttons, text=tr("매드맥스 ON"), command=worker.mad_max_requested.set).pack(side="left", fill="x", expand=True, padx=(0, 6))
+    ttk.Button(mad_max_buttons, text=tr("매드맥스 OFF"), command=mad_max_off).pack(side="left", fill="x", expand=True)
+    mad_max_help = ttk.Label(mad_max_panel, text=tr("탑승한 ATV의 최고속도 제한과 바퀴 구동력을 2배로 높이고, 가속·코너링 중 미끄러짐을 줄이도록 타이어 접지를 보정합니다. 기본 공기저항은 절반으로 낮추고 과속 억제는 유지합니다. 엔진 회전수 범위와 기존 기어는 유지합니다. OFF·하차 시 원래 계산으로 돌아갑니다. 차량에 타지 않았을 때는 ON 선택을 유지하며 대기합니다."), wraplength=440)
+    mad_max_help.pack(anchor="w", fill="x")
     updates_panel = ttk.LabelFrame(panel, text=tr("업데이트"), padding=9)
     updates_panel.pack(fill="x", pady=(3, 0))
     versions = LocalizedStringVar(value=f"현재 {VERSION} / 최신 확인 중")
@@ -859,6 +920,7 @@ def run_gui(color="white"):
         pet_help.configure(wraplength=max(240, event.width - 65))
         hellhound_help.configure(wraplength=max(240, event.width - 65))
         silencer_help.configure(wraplength=max(240,event.width-65))
+        mad_max_help.configure(wraplength=max(240,event.width-65))
         hotkey_label.configure(wraplength=max(240,event.width-65))
         canvas.configure(scrollregion=canvas.bbox("all"))
 
@@ -880,8 +942,9 @@ def run_gui(color="white"):
             else:
                 hotkey_status.set("단축키 등록 실패 · 전체 ON/OFF 버튼을 사용하세요.")
         enabled_count = sum(selection.is_set() for selection in worker.selections())
-        master_status.set(f"전체 ON · {enabled_count}/6" if enabled_count == 6 else
-                          f"일부 ON · {enabled_count}/6" if enabled_count else "전체 OFF · 0/6")
+        mode_count = len(worker.selections())
+        master_status.set(f"전체 ON · {enabled_count}/{mode_count}" if enabled_count == mode_count else
+                          f"일부 ON · {enabled_count}/{mode_count}" if enabled_count else f"전체 OFF · 0/{mode_count}")
         for button in color_buttons:
             button.state(["disabled"] if worker.requested.is_set() or worker.controller.enabled else ["!disabled"])
         corpse_color_button.state(["disabled"] if worker.corpse_requested.is_set() else ["!disabled"])
@@ -900,6 +963,7 @@ def run_gui(color="white"):
             pet_status.set(latest[6])
             hellhound_status.set(latest[7])
             silencer_status.set(latest[8])
+            mad_max_status.set(latest[9])
         try:
             result = update_results.get_nowait()
         except queue.Empty:

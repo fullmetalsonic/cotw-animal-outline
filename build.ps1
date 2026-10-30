@@ -54,12 +54,14 @@ try {
     Invoke-LoggedPython -ArgumentList @('-c', 'import hashlib; from pathlib import Path; from pet_outline import CODE_SIZE, STUB_SHA256; code = Path("pet_stub.bin").read_bytes(); assert len(code) == CODE_SIZE and hashlib.sha256(code).hexdigest() == STUB_SHA256; print("Pet outline binary: PASS")')
     Invoke-LoggedPython -ArgumentList @('-c', 'import hashlib; from pathlib import Path; from hellhound_mode import CODE_SIZE, STUB_SHA256; code = Path("hellhound_stub.bin").read_bytes(); assert len(code) == CODE_SIZE and hashlib.sha256(code).hexdigest() == STUB_SHA256; print("Hellhound eligibility, carry and terrain collision binary: PASS")')
     Invoke-LoggedPython -ArgumentList @('-c', 'import hashlib; from pathlib import Path; import silencer_ai_mode as ai; import silencer_audio_mode as audio; code = Path("silencer_ai_mode.bin").read_bytes(); assert len(code) == ai.CODE_SIZE and hashlib.sha256(code).hexdigest() == ai.STUB_SHA256; code = Path("silencer_audio_mode.bin").read_bytes(); assert len(code) == audio.CODE_SIZE and hashlib.sha256(code).hexdigest() == audio.STUB_SHA256; audio.load_mapping(); print("Silencer AI and audio binaries/mapping: PASS")')
+    Invoke-LoggedPython -ArgumentList @('-c', 'import hashlib; from pathlib import Path; import mad_max_speed as m; code = Path("mad_max_speed.bin").read_bytes(); assert len(code) == m.CODE_SIZE and hashlib.sha256(code).hexdigest() == m.STUB_SHA256; print("Mad Max ATV speed and drive torque binary: PASS")')
     $sslCompanion = & $buildPython -c 'from pathlib import Path; import ssl; p = Path(ssl.__file__).with_name("codex-rejected-cas.pem"); print(str(p) if p.is_file() else "")'
     if ($LASTEXITCODE -ne 0) {
         throw 'Could not inspect Python SSL companion data.'
     }
     $freezeArguments = @('-m', 'PyInstaller', '--noconfirm', '--workpath', 'build/package', '--distpath', $buildDist, '--onefile', '--windowed', '--noupx', '--name', 'COTWAnimalOutline', '--add-data', 'THIRD_PARTY_NOTICES.txt;.', '--add-data', 'corpse_stub.bin;.', '--add-data', 'ninja_stub.bin;.', '--add-data', 'pet_stub.bin;.', '--add-data', 'hellhound_stub.bin;.')
     $freezeArguments += @('--add-data', 'silencer_ai_mode.bin;.', '--add-data', 'silencer_audio_mode.bin;.', '--add-data', 'silencer-audio-mode-map.json;.')
+    $freezeArguments += @('--add-data', 'mad_max_speed.bin;.')
     if (-not [string]::IsNullOrWhiteSpace($sslCompanion)) {
         $freezeArguments += @('--add-data', "$sslCompanion;.")
     }

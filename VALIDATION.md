@@ -1,5 +1,42 @@
 # Validation
 
+## v0.4.4 — release validation and gameplay observations
+
+Checked 2026-10-30 for the v0.4.4 stable release. Seven independent modes start OFF; master ON selects 7/7 and master OFF selects 0/7. Historical results below remain separate from the current release's gameplay observations.
+
+### Mad Max
+
+- **PASS — grip gameplay:** Logs from 19:02:54–19:05:49 recorded 77.8093 km/h, first-to-second gear changes and active grip scaling with no new mode/read errors in that driving window. The user reported that both acceleration wheelspin and sideways sliding decreased. This does not quantify an exact 50% reduction.
+- **Implemented — base drag correction:** A sixth leased site halves the native base Cd read. Original profiles and lift remain unchanged; the overspeed blend from 120 to 127.2 km/h remains native and its high-speed endpoint is unchanged. Original native-function execution gives 226.117 N at 38.9047 km/h, 904.468 N at 77.8093 km/h and 452.234 N after correction at that speed. Final wheel-force equilibrium at the earlier plateau was not captured, so it is not claimed as the sole cause.
+- **PASS — native regression, 21 tests:** Includes all earlier gear/grip checks plus original aerodynamic-function execution, ABI, owner/lease/OFF/dismount/profile/clock/numerical boundaries and six-site rollback.
+- **PASS — post-drag gameplay telemetry:** The updated six-site code was verified in the game process. A bounded 122-sample observation recorded 89.5068 km/h and repeated second-to-third shifts; base Cd stayed 2.389719→1.194860 with zero aero fallback and no mode/read errors in that observation. The user confirmed exceeding 78 km/h. Driving included repeated acceleration and slowing, so 89.5 km/h is the observed peak, not a proven equilibrium top speed.
+- **PENDING USER TEST:** Actual 120 km/h, fourth/fifth gears and full braking/reverse/OFF recovery.
+
+- **Implemented:** 2× ATV maximum-speed limit and 2× wheel drive force for the current local driver, preserving the five native gears and engine RPM range. ON without a current ATV driver waits; OFF restores native calculations. Original transmission, engine and Pfx tuning are not written. The transmission call uses a stack-local halved final drive, 4× positive engine input (2× negative input to preserve engine braking), and a matching 2× native wheel-RPM limit.
+- **FAIL — earlier local iteration:** The user reported slower driving and a feeling that the gear would not change. Only the transmission calculation used the halved final drive; the later native wheel clamp still used the original ratio. Raising the speed-limit field to 120 km/h did not establish that the vehicle could reach that speed.
+- **Earlier grip candidate — 18 native tests:** The original wheel clamp followed by the complete native shift helper reproduces the old first-gear ceiling (385.9226 wheel RPM / approximately 3450 clutch RPM, below the 6800 upshift threshold); the matching 771.845 wheel-RPM limit permits native 1→2→3→4→5 shifts. Grip tests execute the original longitudinal/lateral profile functions, their original curve evaluators, common consumers and demand-versus-limit selection together. They cover signed slip and left/right symmetry, all four wheels, unchanged low-demand forces and load inputs, stopped/reverse/airborne cases, owner/lease/OFF transitions, nonfinite/overflow preservation, material factors, unchanged engine braking and five-site failure rollback. Incomplete older two/three-site installations are refused. These are CPU tests; grip handling had not yet been tested in gameplay at that earlier checkpoint. Current grip gameplay evidence is recorded above.
+- **PASS — pre-grip gameplay telemetry:** The 2026-10-30 drive reached 77.1389 km/h and recorded three first-to-second gear changes at approximately 65.6–67.4 km/h. This confirms the earlier first-gear lock was removed; it does not establish an achievable 120 km/h or third-to-fifth gameplay shifts.
+- **Grip assistance:** All four tires receive the same 2× longitudinal and lateral force limits after the native load/profile calculation. Original load inputs, curve shape, demanded forces, vehicle mass, drive torque and brake torque calculations are retained. Native demand-versus-limit selection still chooses the resulting force.
+
+### Keep Dog Outline
+
+- **PASS — read-boundary regression, 13 targeted tests:** Lists exceeding 1 MiB are read in record-aligned chunks of at most 2730 records. Tests exercise the actual read-size guard at 2730, 2731 and 16384 records, a pet in the last chunk, list transitions and genuine read failures.
+- The previous automatic-OFF event did not log the actual list count/read size. The old oversized-read failure is reproducible; that does not retrospectively prove it caused the observed event. Post-fix live confirmation of that event remains pending.
+
+### Build and preserved evidence
+
+- **PASS — release build:** 165 unit tests (25.393 seconds), 24 source self-checks (16+5+3), and EXE build. EXE: 13,644,464 bytes; SHA-256 `6b5699c95fb08aa4685c7d8049c2e16dbd6cbc5809ce98f46d10dfdaf7c08a04`. The final frozen EXE passed its self-test; all 15 embedded app modules match the source semantically and all 9 data files match byte for byte. Mad Max reassembly matches the bundled binary, and the other 6 native binaries match v0.4.3. The v0.4.3 total of 139 tests below is historical.
+- Earlier gameplay evidence for the six existing modes is retained: white/blue live outlines, obscured carcass outlines, native dog outlines, Ninja transitions, class 5 Hellhound arrival and opening the normal E screen, and AR15 .300 bow firing/impact with native reload audio. Existing untested scent/animal reactions and other stated limits remain.
+- Rolling five-minute observers are private diagnostic tooling and are not included in the distributed app.
+
+### Known issues
+
+The following three issues have unconfirmed causes and are not fixed in v0.4.4.
+
+- **Hellhound:** The user reports intermittent drops partway through carrying a large carcass. Retained diagnostics did not capture a new retrieval transition, so a collision-triggered detach or a terrain-filter defect has not been established.
+- **Equipment after ATV dismount:** Weapons or other held items can intermittently remain invisible. In a failed snapshot the selected item remained stowed, the upper body stayed UNARMED and a native input-blocking flag remained set. Selecting a tent and adjusting its angle restored the item once; later dismounts were normal. These observations do not establish the cause.
+- **Unexpected compound-bow sound:** The sound can occur during later actions and was reported before Silencer was added.
+
 ## v0.4.3 — release validation and gameplay observations
 
 Checked 2026-10-30. These results describe the v0.4.3 release build.
@@ -25,7 +62,7 @@ Checked 2026-10-30. These results describe the v0.4.3 release build.
 - **PASS:** Hellhound native CPU checks: 19 cases. Silencer and mode integration CPU checks: 18 cases. Both assembly bundles reassemble byte-for-byte.
 - **PASS:** Korean and English hidden real-Tk controls at 490×550.
 - **PASS — final frozen executable:** Self-test passed. All 14 embedded application modules semantically match the sources, eight data files match exactly, both assembly bundles reassemble byte-for-byte, and the other four native binaries are unchanged from HEAD. Combined with 139 unit tests, 24 self-checks, and Korean/English UI checks, the release build checks passed.
-- Current executable: 13,625,676 bytes; SHA-256 `7899ffdebc6864c41e01885f2a07d335de5074aa12f4ed6c6b87f822a31ddb8d`.
+- v0.4.3 executable: 13,625,676 bytes; SHA-256 `7899ffdebc6864c41e01885f2a07d335de5074aa12f4ed6c6b87f822a31ddb8d`.
 - Hellhound binary SHA-256: `1ccc9b3a0a53eac8fe07228fec3723a5823ffb89600b5eb7386f9a29ceeb3322`.
 - Silencer binary SHA-256: `a750219eae4be1744c2ed3aee8d94fd4ee46c4e862d740dbc5242cf9ea876a07`.
 

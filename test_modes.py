@@ -1,5 +1,6 @@
 """Independent mode dispatch and death transitions; fake APIs only."""
 import copy
+import itertools
 import struct
 import unittest
 from unittest.mock import Mock, patch
@@ -110,13 +111,12 @@ class ModeTests(unittest.TestCase):
         self.assertEqual(waiting[6], "반려견 윤곽 ON · 연결 대기")
         self.assertEqual(recovered[6], "반려견 윤곽 ON")
 
-    def test_hellhound_transition_keeps_five_selections_and_recovers(self):
+    def test_hellhound_transition_keeps_all_selections_and_recovers(self):
         backend = self.worker_backend()
         backend.refresh_hellhound.side_effect = [mod.TransientHellhoundState("retriever rebinding"), None]
         worker = mod.ModWorker()
         worker.stopping = OneIteration(limit=2)
-        selections = (worker.requested, worker.corpse_requested, worker.ninja_requested,
-                      worker.pet_requested, worker.hellhound_requested)
+        selections = worker.selections()
         self.assertFalse(any(e.is_set() for e in selections))
         for selection in selections:
             selection.set()
@@ -124,10 +124,10 @@ class ModeTests(unittest.TestCase):
             worker.run()
         self.assertTrue(all(e.is_set() for e in selections))
         for method in (backend.write, backend.refresh_corpses, backend.refresh_ninja,
-                       backend.refresh_pet, backend.refresh_hellhound):
+                       backend.refresh_pet, backend.refresh_hellhound, backend.refresh_silencer, backend.refresh_mad_max):
             self.assertEqual(method.call_count, 2)
         waiting, recovered = worker.messages.get_nowait(), worker.messages.get_nowait()
-        self.assertEqual(len(waiting), 9)
+        self.assertEqual(len(waiting), 10)
         self.assertEqual(waiting[7], "헬하운드 ON · 연결 대기")
         self.assertEqual(recovered[7], "헬하운드 ON")
         self.assertEqual(waiting[5:7], ("닌자 ON", "반려견 윤곽 ON"))
@@ -156,9 +156,11 @@ class ModeTests(unittest.TestCase):
         backend.pet_keeper = Mock()
         backend.hellhound_mode = Mock()
         backend.silencer_mode = Mock()
+        backend.mad_max_mode = Mock()
         backend.corpse_renderer.close.side_effect = OSError("lease disconnected")
         backend.corpse_writer, backend.ninja_writer, backend.pet_writer, backend.hellhound_writer = 11, 12, 13, 14
         backend.silencer_writer = 15
+        backend.mad_max_writer = 16
         with patch.object(mod.K, "CloseHandle", return_value=True) as close:
             with self.assertRaises(OSError):
                 backend.close()
@@ -166,8 +168,9 @@ class ModeTests(unittest.TestCase):
         backend.pet_keeper.close.assert_called_once()
         backend.hellhound_mode.close.assert_called_once()
         backend.silencer_mode.close.assert_called_once()
+        backend.mad_max_mode.close.assert_called_once()
         backend.game.close.assert_called_once()
-        self.assertEqual(sorted(c.args[0] for c in close.call_args_list), [11, 12, 13, 14, 15, 99])
+        self.assertEqual(sorted(c.args[0] for c in close.call_args_list), [11, 12, 13, 14, 15, 16, 99])
 
     def test_unverified_ninja_failure_still_turns_modes_off(self):
         backend = self.worker_backend()
@@ -216,11 +219,13 @@ class ModeTests(unittest.TestCase):
         worker.ninja_requested.set()
         worker.pet_requested.set()
         worker.hellhound_requested.set()
+        worker.mad_max_requested.set()
         worker.set_corpse_color((1, 0, 0.5))
         self.assertTrue(worker.requested.is_set())
         self.assertTrue(worker.controller.enabled)
         self.assertFalse(worker.corpse_requested.is_set())
         self.assertTrue(worker.ninja_requested.is_set())
+        self.assertTrue(worker.mad_max_requested.is_set())
         worker.corpse_requested.set()
         worker.set_color("blue")
         self.assertFalse(worker.requested.is_set())
@@ -244,6 +249,11 @@ class ModeTests(unittest.TestCase):
         self.assertTrue(worker.corpse_requested.is_set())
         self.assertTrue(worker.pet_requested.is_set())
         self.assertFalse(worker.hellhound_requested.is_set())
+        self.assertTrue(worker.mad_max_requested.is_set())
+        worker.mad_max_off()
+        self.assertFalse(worker.mad_max_requested.is_set())
+        self.assertTrue(worker.pet_requested.is_set())
+        worker.mad_max_requested.set()
         worker.hellhound_requested.set()
         worker.ninja_requested.set()
         worker.close()
@@ -252,6 +262,7 @@ class ModeTests(unittest.TestCase):
         self.assertFalse(worker.ninja_requested.is_set())
         self.assertFalse(worker.pet_requested.is_set())
         self.assertFalse(worker.hellhound_requested.is_set())
+        self.assertFalse(worker.mad_max_requested.is_set())
 
     def test_invalid_corpse_color_keeps_existing_selection(self):
         worker = mod.ModWorker()
@@ -263,10 +274,10 @@ class ModeTests(unittest.TestCase):
 
     def test_worker_routes_each_mode_without_cross_writes(self):
         real_backend = mod.LiveBackend
-        combinations = [(live, corpse, ninja, pet, hellhound, silencer) for live in (False, True) for corpse in (False, True)
-                        for ninja in (False, True) for pet in (False, True) for hellhound in (False, True) for silencer in (False,True)]
-        for live_on, corpse_on, ninja_on, pet_on, hellhound_on, silencer_on in combinations:
-            with self.subTest(live=live_on, corpse=corpse_on, ninja=ninja_on, pet=pet_on, hellhound=hellhound_on,silencer=silencer_on):
+        combinations = list(itertools.product((False,True),repeat=7))
+        self.assertEqual(len(combinations),128)
+        for live_on, corpse_on, ninja_on, pet_on, hellhound_on, silencer_on, mad_max_on in combinations:
+            with self.subTest(live=live_on, corpse=corpse_on, ninja=ninja_on, pet=pet_on, hellhound=hellhound_on,silencer=silencer_on,mad_max=mad_max_on):
                 created = []
 
                 class Backend:
@@ -281,6 +292,7 @@ class ModeTests(unittest.TestCase):
                         self.pet_updates = 0
                         self.hellhound_updates = 0
                         self.silencer_updates = 0
+                        self.mad_max_updates = 0
                         self.closed = False
                         created.append(self)
 
@@ -290,6 +302,7 @@ class ModeTests(unittest.TestCase):
                     def stop_pet(self): pass
                     def stop_hellhound(self): pass
                     def stop_silencer(self): pass
+                    def stop_mad_max(self): pass
                     def validate(self, target, context): pass
                     def start_writing(self): self.writer = 1
                     def stop_writing(self): self.writer = None
@@ -307,6 +320,9 @@ class ModeTests(unittest.TestCase):
 
                     def refresh_silencer(self):
                         self.silencer_updates += 1
+
+                    def refresh_mad_max(self):
+                        self.mad_max_updates += 1
 
                     def snapshot(self):
                         targets = [row(), row(0), row(0, "bloodhound")]
@@ -333,6 +349,8 @@ class ModeTests(unittest.TestCase):
                     worker.hellhound_requested.set()
                 if silencer_on:
                     worker.silencer_requested.set()
+                if mad_max_on:
+                    worker.mad_max_requested.set()
                 with patch.object(mod, "LiveBackend", Backend):
                     worker.run()
                 self.assertEqual(len(created), 1)
@@ -343,6 +361,10 @@ class ModeTests(unittest.TestCase):
                 self.assertEqual(backend.pet_updates, int(pet_on))
                 self.assertEqual(backend.hellhound_updates, int(hellhound_on))
                 self.assertEqual(backend.silencer_updates, int(silencer_on))
+                self.assertEqual(backend.mad_max_updates, int(mad_max_on))
+                message=worker.messages.get_nowait()
+                self.assertEqual(len(message),10)
+                self.assertEqual(message[9],"매드맥스 ON · 속도·구동력 2배" if mad_max_on else "매드맥스 OFF")
                 self.assertTrue(backend.closed)
 
     def test_master_toggle_clears_partial_selection_then_enables_all(self):
@@ -352,7 +374,9 @@ class ModeTests(unittest.TestCase):
         worker.toggle_all()
         self.assertFalse(any(e.is_set() for e in worker.selections()))
         worker.toggle_all()
-        self.assertEqual(len(worker.selections()),6)
+        self.assertEqual(worker.selections(),(worker.requested,worker.corpse_requested,worker.ninja_requested,
+                                             worker.pet_requested,worker.hellhound_requested,worker.silencer_requested,
+                                             worker.mad_max_requested))
         self.assertTrue(all(e.is_set() for e in worker.selections()))
         worker.controller.enable((1,2))
         worker.all_off()
@@ -374,8 +398,30 @@ class ModeTests(unittest.TestCase):
         self.assertEqual(waiting[8],"소음기 ON · 연결 대기")
         self.assertEqual(recovered[8],"소음기 ON · 롱보우")
         self.assertTrue(all(e.is_set() for e in worker.selections()))
-        for name in ("write","refresh_corpses","refresh_ninja","refresh_pet","refresh_hellhound","refresh_silencer"):
+        for name in ("write","refresh_corpses","refresh_ninja","refresh_pet","refresh_hellhound","refresh_silencer","refresh_mad_max"):
             self.assertEqual(getattr(backend,name).call_count,2)
+
+    def test_mad_max_transition_keeps_all_seven_requests_and_recovers(self):
+        backend=self.worker_backend()
+        backend.refresh_mad_max.side_effect=[mod.TransientMadMaxState("driver changed"),None]
+        worker=mod.ModWorker();worker.stopping=OneIteration(limit=2);worker.all_on()
+        with patch.object(mod,"LiveBackend",return_value=backend):worker.run()
+        waiting,recovered=worker.messages.get_nowait(),worker.messages.get_nowait()
+        self.assertEqual(len(waiting),10);self.assertEqual(waiting[9],"매드맥스 ON · 탈것 대기")
+        self.assertEqual(recovered[9],"매드맥스 ON · 속도·구동력 2배")
+        self.assertEqual(waiting[5:9],("닌자 ON","반려견 윤곽 ON","헬하운드 ON","소음기 ON · 롱보우"))
+        self.assertTrue(all(event.is_set() for event in worker.selections()))
+        for name in ("write","refresh_corpses","refresh_ninja","refresh_pet","refresh_hellhound","refresh_silencer","refresh_mad_max"):
+            self.assertEqual(getattr(backend,name).call_count,2)
+
+    def test_mad_max_fatal_error_stays_visible_and_clears_all_requests(self):
+        backend=self.worker_backend();backend.refresh_mad_max.side_effect=OSError("ATV write failed")
+        worker=mod.ModWorker();worker.stopping=OneIteration();worker.all_on()
+        with patch.object(mod,"LiveBackend",return_value=backend):worker.run()
+        message=worker.messages.get_nowait()
+        self.assertEqual(len(message),10);self.assertEqual(message[2],"ATV write failed")
+        self.assertEqual(message[9],"매드맥스 OFF");self.assertFalse(any(e.is_set() for e in worker.selections()))
+        backend.close.assert_called_once()
 
 
 if __name__ == "__main__":

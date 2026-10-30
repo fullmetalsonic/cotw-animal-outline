@@ -19,6 +19,7 @@ CHAR_VTABLE_RVA, PLAYER_VTABLE_RVA = 0x1A60028, 0x1EE24A0
 CODE_SIZE, HEADER_SIZE, STATS_SIZE = 4096, 320, 64
 MAGIC = b"COTW_PETBLUE_V1".ljust(16, b"\0")
 LEASE_SECONDS = .30
+NODES_PER_READ = (1 << 20)//0x180  # GameMemory.read's 1 MiB limit, in complete rows.
 STUB_SHA256 = "8de7c7051b1ed1a198e7ffc396e8450f7473f3cda37bac0917a25117ed23463e"
 SIGNATURES = {
     0x6A7E30: bytes.fromhex("40534883ec50488bd90f29742440488b0d1b961502ba910000000f28f1e86e15440085c00f84a3000000488b0dff951502bac4000000"),
@@ -179,29 +180,36 @@ class PetOutlineKeeper:
         count = struct.unpack("<H", self.api.read(pool+0x1A, 2))[0]
         if not nodes or not 0 < count <= 16384:
             raise RuntimeError("AI 입력 목록이 유효하지 않습니다")
-        records = self.api.read(nodes, count*0x180)
         capacity = self._u32(pool+0x120)
         pets = []
-        for offset in range(0, len(records), 0x180):
-            if struct.unpack_from("<I", records, offset+0x170)[0] != 1 or not records[offset+0x17C] & 1:
-                continue
-            character = struct.unpack_from("<Q", records, offset+0xB8)[0]
-            if not character or character == local["character"]:
-                continue
-            candidate = self._pet_candidate(character, local["owner_id"])
-            if candidate is None:
-                continue
-            dog, meta = candidate
-            handle = self._u32(character+0x2098)
-            index = handle >> 16
-            source = nodes+offset
-            if (not handle & 0xFFFF or index >= capacity
-                    or struct.unpack_from("<H", records, offset+0x174)[0] != index):
-                raise TransientPetState("반려견 AI 입력이 변경 중입니다")
-            entry = self._u32(mapping+index*4)
-            if entry & 0xFFFF != handle & 0xFFFF or nodes+(entry >> 16)*0x180 != source:
-                raise TransientPetState("반려견 AI 입력 세대가 변경 중입니다")
-            pets.append(dict(dog_character=character, dog=dog, dog_source=source, dog_handle=handle, meta=meta))
+        for first in range(0,count,NODES_PER_READ):
+            start = nodes+first*0x180
+            try:
+                records = self.api.read(start,min(count-first,NODES_PER_READ)*0x180)
+            except OSError as error:
+                if self._qword(pool) != nodes or struct.unpack("<H",self.api.read(pool+0x1A,2))[0] != count:
+                    raise TransientPetState("반려견 목록이 변경 중입니다") from error
+                raise
+            for offset in range(0, len(records), 0x180):
+                if struct.unpack_from("<I", records, offset+0x170)[0] != 1 or not records[offset+0x17C] & 1:
+                    continue
+                character = struct.unpack_from("<Q", records, offset+0xB8)[0]
+                if not character or character == local["character"]:
+                    continue
+                candidate = self._pet_candidate(character, local["owner_id"])
+                if candidate is None:
+                    continue
+                dog, meta = candidate
+                handle = self._u32(character+0x2098)
+                index = handle >> 16
+                source = start+offset
+                if (not handle & 0xFFFF or index >= capacity
+                        or struct.unpack_from("<H", records, offset+0x174)[0] != index):
+                    raise TransientPetState("반려견 AI 입력이 변경 중입니다")
+                entry = self._u32(mapping+index*4)
+                if entry & 0xFFFF != handle & 0xFFFF or nodes+(entry >> 16)*0x180 != source:
+                    raise TransientPetState("반려견 AI 입력 세대가 변경 중입니다")
+                pets.append(dict(dog_character=character, dog=dog, dog_source=source, dog_handle=handle, meta=meta))
         if len(pets) != 1:
             raise TransientPetState("활성 반려견 연결을 기다리고 있습니다")
         pet = pets[0]

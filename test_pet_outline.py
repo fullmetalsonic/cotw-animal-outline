@@ -1,8 +1,10 @@
 """No game access: fake Windows boundary and the real PIC stub on Unicorn."""
 import hashlib
+import ctypes as C
 from pathlib import Path
 import struct
 import unittest
+import types
 from unittest.mock import patch
 
 import pet_outline as m
@@ -152,6 +154,77 @@ class PublishTests(unittest.TestCase):
             with self.assertRaises(m.TransientPetState):
                 self.mode.publish()
         self.assertEqual(self.api.read(self.mode.allocation+m.CODE_SIZE+72, 8), bytes(8))
+
+    def large_pool(self,count):
+        old_player=self.local['source'];old_dog=self.extra['dog_source'];nodes=0x210000000
+        player_source=nodes+self.extra['slot']*0x180;dog_source=nodes+(count-1)*0x180
+        if hasattr(self,'large_dog_source'):self.api.put(self.large_dog_source,bytes(0x180))
+        self.large_dog_source=dog_source
+        self.api.put(player_source,self.api.read(old_player,0x180));self.api.put(dog_source,self.api.read(old_dog,0x180))
+        put_qword(self.api,self.local['pool'],nodes)
+        self.api.put(self.local['pool']+0x1A,struct.pack('<H',count))
+        put_u32(self.api,self.local['mapping']+20,((count-1)<<16)|0x9ABC)
+        return nodes,dog_source
+
+    def guarded_reads(self,callback=None):
+        reads=[];memory=types.SimpleNamespace(handle=1);original=self.api.read
+        def kernel_read(handle,address,buffer,size,received):
+            data=original(address,size);C.memmove(buffer,data,size)
+            C.cast(received,C.POINTER(C.c_size_t))[0]=size
+            reads.append((address,size))
+            if callback:callback(address,size)
+            return True
+        def read(address,size):return m.probe.GameMemory.read(memory,address,size)
+        return reads,patch.object(m.probe.K,'ReadProcessMemory',side_effect=kernel_read),patch.object(self.api,'read',side_effect=read)
+
+    def test_pool_2730_2731_and_16384_records_use_actual_game_memory_guard_and_find_last_pet(self):
+        for count in (2730,2731,16384):
+            with self.subTest(count=count):
+                # The old single bulk read reaches the real guard before any Win32 call.
+                if count>2730:
+                    with self.assertRaisesRegex(ValueError,'Invalid game-memory range'):
+                        m.probe.GameMemory.read(None,0x210000000,count*0x180)
+                nodes,dog_source=self.large_pool(count)
+                reads,kernel,api=self.guarded_reads()
+                with kernel,api:
+                    binding=self.mode._binding()
+                self.assertEqual(binding['dog_source'],dog_source)
+                chunks=[(a,n) for a,n in reads if nodes<=a<nodes+count*0x180 and (a-nodes)%(2730*0x180)==0 and n>=0x180]
+                self.assertEqual(sum(n for _,n in chunks),count*0x180)
+                self.assertTrue(all(n<=2**20 and n%0x180==0 for _,n in chunks))
+                self.assertFalse(self.api.events)
+
+    def test_chunk_list_change_is_transient_but_unchanged_read_failure_is_fatal(self):
+        nodes,_=self.large_pool(2731);changed=False
+        def change_count(address,size):
+            nonlocal changed
+            if address==nodes and size>=0x180 and not changed:
+                changed=True;self.api.put(self.local['pool']+0x1A,struct.pack('<H',2732))
+        reads,kernel,api=self.guarded_reads(change_count)
+        with kernel,api:
+            with self.assertRaises(m.TransientPetState):self.mode._binding()
+        for moving in (False,True):
+            nodes,_=self.large_pool(2731)
+            def failed_chunk(address,size):
+                if address==nodes+2730*0x180 and size>=0x180:
+                    if moving:put_qword(self.api,self.local['pool'],nodes+0x1000000)
+                    raise OSError('unreadable chunk')
+            reads,kernel,api=self.guarded_reads(failed_chunk)
+            with kernel,api:
+                with self.assertRaises(m.TransientPetState if moving else OSError):self.mode._binding()
+
+    def test_invalid_node_addresses_and_counts_remain_fatal(self):
+        local=self.mode._local()
+        for nodes in (0x1234,0x800000000000):
+            put_qword(self.api,self.local['pool'],nodes)
+            reads,kernel,api=self.guarded_reads()
+            with kernel,api,patch.object(self.mode,'_local',return_value=local):
+                with self.assertRaisesRegex(ValueError,'Invalid game-memory range'):self.mode._binding()
+        put_qword(self.api,self.local['pool'],self.extra['nodes'])
+        for count in (0,16385):
+            self.api.put(self.local['pool']+0x1A,struct.pack('<H',count))
+            with patch.object(self.mode,'_local',return_value=local):
+                with self.assertRaisesRegex(RuntimeError,'AI 입력 목록'):self.mode._binding()
 
 
 class MachineTests(unittest.TestCase):

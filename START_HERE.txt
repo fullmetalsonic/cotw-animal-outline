@@ -1,13 +1,13 @@
-COTW Animal Outline v0.4.3
+COTW Animal Outline v0.4.4
 
-Latest stable release:
+Current stable release: v0.4.4
 https://github.com/fullmetalsonic/cotw-animal-outline/releases/latest
 
 QUICK START
-1. Extract the ZIP and run COTWAnimalOutline.exe. Python is not required; a standalone EXE is also available.
+1. Extract the v0.4.4 release ZIP and run COTWAnimalOutline.exe. Python is not required; a standalone EXE is also available.
 2. To replace an existing copy, close its program before running the new EXE.
 3. Start the game and enter a single-player reserve.
-4. Turn on only the modes you want. All six start OFF.
+4. Turn on only the modes you want. All seven start OFF.
 
 Supported: Windows 10/11 x64, Steam build 26051119 / code 3366163.
 The app finds the install path from the running game process; it does not edit
@@ -30,10 +30,24 @@ Silencer: all weapons use longbow firing and bow impact audio, with the native
 longbow AI sound profile. No ballistics, damage, ammunition, or reload changes.
 Separate rifle/revolver/shotgun tails are suppressed while Silencer is ON.
 The user verified bow firing/impact sounds and original reload audio on an AR15 .300.
-Other weapons and actual animal hearing remain untested in gameplay. A reported
-compound-bow sound during later actions predates Silencer and remains unresolved.
+Other weapons and actual animal hearing remain untested in gameplay.
 
-ALL ON/OFF are at the top. Ctrl+Shift+F10 toggles all modes; any ON turns all
+Mad Max: 2x ATV maximum-speed limit and 2x wheel drive force; the existing
+five gears and engine RPM range remain. Balanced tire grip assistance reduces
+wheelspin and sideways sliding. Base aerodynamic drag is halved; overspeed
+resistance is retained. ON waits for the local ATV driver;
+OFF restores native calculations. Pre-drag logs reached 77.8 km/h with first-to-second shifts. The user
+confirmed reduced wheelspin and sideways sliding. Post-drag logs reached 89.5 km/h
+and third gear. Actual 120 km/h and fourth/fifth gears: PENDING USER TEST.
+Exact slip reduction depends on driving conditions.
+
+ALL ON/OFF are at the top (7/7 ON, 0/7 OFF). Ctrl+Shift+F10 toggles all modes; any ON turns all
 OFF, and all OFF turns all ON. No F1 shortcut. UI language follows the Windows
 display language: Korean for Korean, English otherwise (region is independent).
+KNOWN ISSUES
+- Hellhound can intermittently drop a large carried carcass before reaching the player.
+- Weapons or other held items can intermittently remain invisible after ATV dismount.
+- An unexpected compound-bow sound can occur during later actions; this predates Silencer.
+The causes of all three issues are unconfirmed and this release does not fix them.
+
 See README.md and VALIDATION.md for details and limits.

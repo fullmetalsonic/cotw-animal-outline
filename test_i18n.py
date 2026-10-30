@@ -96,6 +96,8 @@ class CatalogTests(unittest.TestCase):
             '살아 있는 사냥감: 10마리': 'Live animals: 10',
             '전체 ON · 6/6': 'All ON · 6/6',
             '일부 ON · 3/6': 'Some ON · 3/6',
+            '전체 ON · 7/7': 'All ON · 7/7',
+            '일부 ON · 3/7': 'Some ON · 3/7',
             '현재 0.4.0 / 최신 0.5.0': 'Current 0.4.0 / Latest 0.5.0',
             '현재 0.4.0 / 최신 확인 중': 'Current 0.4.0 / Checking latest',
             '현재 0.4.0 / 최신 확인 불가': 'Current 0.4.0 / Latest Unavailable',
@@ -108,6 +110,8 @@ class CatalogTests(unittest.TestCase):
             'Ctrl+Shift+F10 · 단축키 등록 중': 'Ctrl+Shift+F10 · Registering hotkey',
             'Ctrl+Shift+F10 · 전체 ON/OFF': 'Ctrl+Shift+F10 · All ON/OFF',
             '소음기 ON · 롱보우': 'Silencer ON · Longbow',
+            '매드맥스 ON · 속도·구동력 2배': 'Mad Max ON · Speed and drive torque x2',
+            '매드맥스 ON · 탈것 대기': 'Mad Max ON · Waiting for ATV',
         }
         for source, expected in samples.items():
             with self.subTest(source=source):
@@ -165,9 +169,10 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(missing, [], 'Untranslated application f-string templates')
         self.assertTrue(all(not HANGUL.search(value) for value in m.EN.values()))
 
-    def test_new_native_silencer_error_catalog_is_complete(self):
+    def test_native_silencer_and_mad_max_error_catalog_is_complete(self):
         missing = []
-        for path in ROOT.glob('silencer*.py'):
+        paths=list(ROOT.glob('silencer*.py'))+[ROOT/'mad_max_speed.py']
+        for path in paths:
             tree = ast.parse(path.read_text(encoding='utf-8-sig'))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Raise) or not isinstance(node.exc, ast.Call) or not node.exc.args:continue
